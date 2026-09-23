@@ -1,0 +1,26 @@
+{
+  "name": "exploratory-mcp-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "An autonomous exploratory-testing agent that drives a browser through Playwright MCP, reasons with a local LLM, and writes up both QA findings and app documentation.",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "check:dedupe": "tsx tools/check-finding-dedupe.ts",
+    "check:tabs": "tsx tools/check-tabs.ts",
+    "help": "tsx src/index.ts --help"
+  },
+  "engines": {
+    "node": ">=20.12"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@playwright/mcp": "^0.0.82"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.2",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}
