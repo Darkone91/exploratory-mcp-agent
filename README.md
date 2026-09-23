@@ -7,9 +7,13 @@ poking at edge cases — and then writes up two things:
 - **`findings.md`** — defects and risks it actually observed, ranked by severity
 - **`app-guide.md`** — how the application works, for someone who has never seen it
 
-Both come out of the same run, because they are the same knowledge. An agent
-that has just spent twenty minutes working out what an app does is the wrong
-thing to throw away.
+Both come out of the same run, because they are the same knowledge. An agent that
+has just spent a run working out what an application does is the wrong thing to
+throw away.
+
+A complete run is committed under [`examples/`](examples/) - the real, unedited
+output of one exploration - if you would rather read what the agent produces before
+installing anything.
 
 ## Why it exists
 
@@ -54,11 +58,15 @@ This is the case MCP was actually designed for. From the Playwright MCP README:
 npm install
 node node_modules/playwright/cli.js install chromium
 cp .env.example .env          # optional; defaults work
-ollama pull qwen2.5:7b
-npm start -- --url https://the-internet.herokuapp.com --steps 15
+ollama pull qwen2.5:14b       # or qwen2.5:7b, which is the default
+npm start -- --url https://the-internet.herokuapp.com --steps 15 --model qwen2.5:14b
 ```
 
-Output lands in `runs/<timestamp>/`.
+Output lands in `runs/<timestamp>/`. `npm test` runs the typecheck and the
+calibration checks described further down.
+
+If you only run one model, run the 14B: it reasons noticeably better about what is
+worth probing. Do read the timings below before assuming that costs you time.
 
 ## Measured performance
 
@@ -74,12 +82,12 @@ site used 31,557 prompt tokens, 1,610 output tokens, and 84 seconds of model tim
 The first step took ~19 seconds because it loads the weights; after that, steps
 ranged from 3 to 9 seconds.
 
-That spread is larger than it looks, and it matters when choosing a model: 5.6
-seconds per step on average is a better outcome than the 7B throughput figure above
-would predict. But those two numbers were produced in different ways - one is
+That spread is larger than it looks, and it raises the obvious question of whether
+the bigger model is actually the more expensive one to run. The honest answer is
+that I do not know yet: those two numbers were produced in different ways - one is
 throughput measured on a benchmark, the other is a whole run measured end to end -
-so they are not directly comparable, and I would rather flag that than let the
-juxtaposition imply a conclusion I have not actually tested.
+so putting them side by side implies a comparison I have not made. Measuring both
+models on the same run is the obvious next thing to do here.
 
 What the numbers did decide is the observation format: at 271 tokens/s of prompt
 processing, sending screenshots instead of accessibility trees would mean paying
@@ -94,7 +102,7 @@ more compact, it carries roles and accessible names, and it does not need a visi
 model at all.
 
 **Tool schemas are prose, not JSON Schema.** The server exposes around sixty
-tools. Handing all of them to a 7B model spends most of the context window on
+tools. Handing all of them to a small model spends most of the context window on
 schemas it will never call, so eleven are curated and described in a few lines
 each. The boundary is explicit in `CURATED_TOOLS`.
 
@@ -272,6 +280,9 @@ tools/
   check-tabs.ts            open-tab parser, pinned to a real tool result
   check-finding-dedupe.ts  threshold calibration for finding de-duplication
   check-offsite.ts         which URLs count as the application
+examples/
+  the-internet/            one complete run, kept so the output can be read
+                           without running anything
 ```
 
 ## Checks
@@ -294,6 +305,13 @@ change by accident.
 
 ## What is not built yet
 
+- **Notes that read like a narrator.** About half of the `learned` entries in the
+  committed example are narration - "Navigating back to the homepage to explore
+  another link" - rather than something a reader could act on. The prompt asks for
+  facts, gives examples of good and bad, and the model still does it, which by this
+  point in the project should be no surprise to anyone. The fix is mechanical rather
+  than persuasive: an intention has grammar, and "I will" / "I am about to" /
+  "Navigating back to" can be detected and either sent back or trimmed off.
 - **A full verification pass.** The name check described above catches a control
   that was invented outright, which is the crudest kind of falsehood and the one
   that reached the guide most often. It does not catch a claim that is subtly
