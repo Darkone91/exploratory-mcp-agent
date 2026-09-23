@@ -12,6 +12,7 @@ import { BrowserSession } from '../mcp/playwright.js';
 import { log, colour } from '../util/log.js';
 import { RunArtifacts, parseFinding, type StepRecord } from './artifacts.js';
 import { unsupportedTerms } from './evidence.js';
+import { cleanNote } from './notes.js';
 import { buildStepPrompt, buildSystemPrompt, type AgentDecision } from './prompts.js';
 import { extractActions, type SnapshotAction } from './snapshot.js';
 
@@ -345,15 +346,25 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 			};
 			artifacts.record(record);
 
-			// A note that names something the browser never showed is not an observation.
-			const unverified = learned === '' ? [] : unsupportedTerms(learned, evidence.join('\n'));
+			// Notes are checked twice over: a plan is not an observation, and a named
+			// element either appears in what the browser returned or it does not.
+			const cleaned = learned === '' ? { note: null, trimmed: false } : cleanNote(learned);
+			const unverified =
+				cleaned.note === null ? [] : unsupportedTerms(cleaned.note, evidence.join('\n'));
+
+			if (cleaned.trimmed) {
+				log.dim(
+					cleaned.note === null
+						? 'dropped a note that described a plan rather than an observation'
+						: `trimmed a plan off a note - kept: "${cleaned.note}"`,
+				);
+			}
 			if (unverified.length > 0) {
 				log.dim(
 					`unverified note - ${unverified.map((term) => `"${term}"`).join(', ')} appears nowhere in what the browser returned`,
 				);
-			} else if (learned !== '') {
-				artifacts.addNote(learned);
 			}
+			if (cleaned.note !== null && unverified.length === 0) artifacts.addNote(cleaned.note);
 
 			if (usableFinding) artifacts.addFinding(usableFinding);
 
@@ -362,7 +373,14 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 			log.step(step, config.maxSteps, `${colour.bold(tool)} ${marker} ${colour.dim(`${call.ms}ms`)}${refs}`);
 			if (thought) log.dim(thought);
 			if (learned) {
-				const mark = unverified.length > 0 ? colour.yellow('  (unverified, not kept)') : '';
+				const mark =
+					cleaned.note === null
+						? colour.yellow('  (a plan, not an observation - not kept)')
+						: unverified.length > 0
+							? colour.yellow('  (unverified, not kept)')
+							: cleaned.trimmed
+								? colour.dim(`  (kept: ${cleaned.note})`)
+								: '';
 				log.dim(`learned: ${learned}${mark}`);
 			}
 			if (usableFinding) log.info(`${colour.yellow(`finding [${usableFinding.severity}]`)} ${usableFinding.title}`);
@@ -430,6 +448,18 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 					observed,
 				].join('\n');
 				observationLabel = 'Correction needed (your action failed)';
+			}
+
+			if (cleaned.note === null && learned !== '') {
+				observed = [
+					`You wrote this in "learned": ${learned}`,
+					'That describes what you are about to do rather than what you observed.',
+					'"learned" is the only source for the application guide, so a plan in this field is something a reader has to skip past.',
+					'Put your next action in "thought", where it belongs, and put what the application does in "learned".',
+					'',
+					observed,
+				].join('\n');
+				observationLabel = 'Correction needed (a plan, not an observation)';
 			}
 
 			if (unverified.length > 0) {

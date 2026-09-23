@@ -234,6 +234,27 @@ reports, and it did - by pointing the model at the other tab. Fixing one failure
 mode created a new one, and the only reason I know is that every run is read rather
 than trusted.
 
+**A plan is not an observation.** Half of the `learned` entries in the committed
+example are the agent narrating its own intentions - "Navigating back to the homepage
+to explore another link", "The homepage contains a link to 'Checkboxes' which I am
+about to click". None of that tells a reader anything about the application, and it
+is the only content of `app-guide.md`, so the guide reads like a transcript of
+somebody thinking out loud.
+
+Most of those claims are not worthless, though: the second one contains a real
+observation wrapped in a plan. So the plan is cut off rather than the note thrown
+away.
+
+```
+"The homepage contains a link to 'Checkboxes' which I am about to click."
+  -> "The homepage contains a link to 'Checkboxes'."
+```
+
+A claim that opens with the agent's own action - "Navigating back to..." - has no
+observation in it at all, so it is dropped and the model is told where that sentence
+belongs instead: in `thought`. The original wording stays in `run.jsonl`, because the
+transcript is evidence and is not rewritten. Only the guide is cleaned.
+
 **Coverage is recorded, and an empty report says so.** A thorough clean run and a
 lazy one both produce a findings file with nothing in it, and that ambiguity is the
 most misleading thing this tool can emit. Pages reached are harvested from tool
@@ -275,11 +296,13 @@ src/
     artifacts.ts    findings.md, app-guide.md, run.jsonl
     snapshot.ts     real element refs, harvested from the accessibility tree
     evidence.ts     checks a claim against what the browser actually returned
+    notes.ts        strips a plan out of a note, keeping the observation
   util/log.ts       ASCII-only console output
 tools/
   check-tabs.ts            open-tab parser, pinned to a real tool result
   check-finding-dedupe.ts  threshold calibration for finding de-duplication
   check-offsite.ts         which URLs count as the application
+  check-notes.ts           note trimming, against real sentences from a run
 examples/
   the-internet/            one complete run, kept so the output can be read
                            without running anything
@@ -296,6 +319,7 @@ later change cannot quietly bring the failure back.
 | `check:tabs` | the open-tab parser, against the literal tool output behind a false "broken link" finding |
 | `check:dedupe` | the similarity threshold, between real reworded duplicates and real distinct defects |
 | `check:offsite` | which URLs count as the application, lookalike hosts included |
+| `check:notes` | note trimming, against nine real sentences from the committed run |
 
 The de-duplication threshold is the clearest example of why these exist. Reworded
 reports of one issue measured 0.50 similarity, genuinely different defects measured
@@ -305,13 +329,11 @@ change by accident.
 
 ## What is not built yet
 
-- **Notes that read like a narrator.** About half of the `learned` entries in the
-  committed example are narration - "Navigating back to the homepage to explore
-  another link" - rather than something a reader could act on. The prompt asks for
-  facts, gives examples of good and bad, and the model still does it, which by this
-  point in the project should be no surprise to anyone. The fix is mechanical rather
-  than persuasive: an intention has grammar, and "I will" / "I am about to" /
-  "Navigating back to" can be detected and either sent back or trimmed off.
+- **The note trimmer matches patterns, it does not understand.** It knows the
+  phrasings this model has actually used, and a new way of narrating the same plan
+  will get through. `npm run check:notes` holds nine real sentences from the
+  committed run - including three that straddle the line between an observation and
+  a plan - and is where a new phrasing will first show up as a failure.
 - **A full verification pass.** The name check described above catches a control
   that was invented outright, which is the crudest kind of falsehood and the one
   that reached the guide most often. It does not catch a claim that is subtly
