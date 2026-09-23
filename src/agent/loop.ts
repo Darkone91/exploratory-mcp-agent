@@ -327,25 +327,6 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 				log.dim(`dropped finding "${finding.title}" - it came from a failed tool call, not from the application`);
 			}
 
-			const record: StepRecord = {
-				step,
-				at: new Date().toISOString(),
-				url: currentUrl,
-				thought: thought || null,
-				tool,
-				args,
-				learned: learned || null,
-				finding: usableFinding,
-				toolMs: call.ms,
-				llmMs: llm.stats.totalMs,
-				promptTokens: llm.stats.promptTokens,
-				outputTokens: llm.stats.outputTokens,
-				resultPreview: truncate(call.text, 400),
-				isError: call.isError,
-				actions: actions.map((action) => action.label),
-			};
-			artifacts.record(record);
-
 			// Notes are checked twice over: a plan is not an observation, and a control the
 			// claim names either appears in what the browser returned or it does not.
 			// Both quoted names and bare control words are checked, because the model
@@ -359,6 +340,37 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 							...unsupportedTerms(cleaned.note, corpus),
 							...unsupportedControlWords(cleaned.note, corpus),
 						];
+
+			const record: StepRecord = {
+				step,
+				at: new Date().toISOString(),
+				url: currentUrl,
+				thought: thought || null,
+				tool,
+				args,
+				learned: learned || null,
+				finding: usableFinding,
+				// Recorded so the transcript explains itself. Without this, reading
+				// run.jsonl cannot tell whether a note was never written, or written and
+				// then dropped, which is the first question when the guide looks thin.
+				noteKept: cleaned.note,
+				noteIssue:
+					cleaned.note === null && learned !== ''
+						? 'a plan, not an observation'
+						: unverified.length > 0
+							? `names ${unverified.join(', ')}, which the browser never returned`
+							: cleaned.trimmed
+								? 'plan trimmed off the end'
+								: null,
+				toolMs: call.ms,
+				llmMs: llm.stats.totalMs,
+				promptTokens: llm.stats.promptTokens,
+				outputTokens: llm.stats.outputTokens,
+				resultPreview: truncate(call.text, 400),
+				isError: call.isError,
+				actions: actions.map((action) => action.label),
+			};
+			artifacts.record(record);
 
 			if (cleaned.trimmed) {
 				log.dim(

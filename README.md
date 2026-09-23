@@ -142,7 +142,7 @@ pretending otherwise - it is moving the reliability out of the prompt and into t
 harness.
 
 Every item below exists because a specific run failed in a specific way, and the
-failure is named in the code comment above it. Six of them are responses to the same
+failure is named in the code comment above it. Most of them are responses to the same
 lesson, which took me most of a day to accept:
 
 > Prompt rules have failed here, measurably, over and over: use absolute URLs, use
@@ -277,13 +277,18 @@ observation in it at all, so it is dropped and the model is told where that sent
 belongs instead: in `thought`. The original wording stays in `run.jsonl`, because the
 transcript is evidence and is not rewritten. Only the guide is cleaned.
 
-**Coverage is recorded, and an empty report says so.** A thorough clean run and a
-lazy one both produce a findings file with nothing in it, and that ambiguity is the
-most misleading thing this tool can emit. Pages reached are harvested from tool
-results - from what the browser actually loaded, not from the model's account of
-where it went - and the empty case now reads "No defects were observed in this run"
-next to the list of pages that were reached, followed by "Pages that were never
-opened are not evidence of health".
+**Coverage is reported in every run.** A thorough clean run and a lazy one both
+produce a findings file with nothing in it, and that ambiguity is the most misleading
+thing this tool can emit. So every report ends with the pages that were reached,
+gathered from what the browser actually loaded rather than from the model's account of
+where it went, next to the line that stops it being read as a clean bill of health:
+*Pages that were never opened are not evidence of health.*
+
+It matters more when there **are** findings, not less - three defects found after
+reaching one page is a very different report from the same three after reaching
+twenty. The first version of this printed coverage only when the findings list was
+empty, which is precisely backwards, and it took seeing a one-finding report to
+notice.
 
 Plus the quieter ones: a curated tool surface, notes rather than the full
 transcript, findings deduplicated by content, and artefacts written even when the
@@ -298,6 +303,15 @@ run dies partway through.
   the observation window is small, and the loop rejects actions that reference
   tools that do not exist rather than letting the run drift.
 - **No authentication.** Public applications only, for now.
+- **Native browser UI is invisible to it.** The accessibility tree contains the page,
+  not the browser. A context menu, a file picker or a native alert is not in it, so an
+  interaction that only produces native UI looks exactly like an interaction that does
+  nothing - and the agent will report it as one. The committed example run does
+  precisely this: it calls the Context Menu page broken because right-clicking
+  produced no visible change, when in fact the menu belongs to the browser and was
+  never going to appear in a snapshot. The finding is honest about what was observed
+  and still wrong about the application, which is the distinction the whole
+  limitations section is about.
 - **Tabs are noticed, not explored.** The loop reads the tab list, so a link that
   opens in a new tab is not mistaken for a dead one, but the agent works in one tab
   at a time.

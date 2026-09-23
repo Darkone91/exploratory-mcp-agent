@@ -28,6 +28,19 @@ export interface StepRecord {
 	args: Record<string, unknown> | null;
 	learned: string | null;
 	finding: Finding | null;
+	/**
+	 * The note as it was kept, after any plan was trimmed off the end. Null when
+	 * nothing was kept.
+	 */
+	noteKept: string | null;
+	/**
+	 * Why the note was trimmed or dropped, or null when it went in unchanged.
+	 *
+	 * Without this the transcript cannot explain itself: reading run.jsonl would not
+	 * tell you whether a note was never written or written and then rejected, and
+	 * that is the first question when the guide looks thin.
+	 */
+	noteIssue: string | null;
 	toolMs: number;
 	llmMs: number;
 	promptTokens: number;
@@ -228,29 +241,34 @@ export class RunArtifacts {
 			'',
 		];
 
+		const lines = [...head];
+
 		if (this.findings.length === 0) {
-			return [
-				...head,
-				'No defects were observed in this run.',
-				'',
-				// A thorough clean run and a lazy one produce the same empty report, and
-				// that ambiguity is the most misleading thing this tool can output. The
-				// run that prompted this spent all 14 of its steps on one page of a
-				// twelve-page application. Say what was covered, right next to the
-				// claim, so the claim cannot be read as a clean bill of health.
-				`Read that with the coverage below in mind: ${this.steps.length} steps reached ${this.visitedUrls.length} page${this.visitedUrls.length === 1 ? '' : 's'}.`,
-				'',
-				...this.visitedUrls.map((url) => `- ${url}`),
-				'',
-				'Pages that were never opened are not evidence of health.',
-				'',
-			].join('\n');
+			lines.push('No defects were observed in this run.', '');
 		}
+
+		// Coverage belongs here whether or not anything was found. A report that lists
+		// three defects after reaching one page reads very differently from the same
+		// three after reaching twenty, and a reader has no way to tell the difference
+		// unless the report says which it was.
+		lines.push(
+			'## Coverage',
+			'',
+			`${this.steps.length} steps reached ${this.visitedUrls.length} page${this.visitedUrls.length === 1 ? '' : 's'} of the application.`,
+			'',
+			...(this.visitedUrls.length > 0
+				? this.visitedUrls.map((url) => `- ${url}`)
+				: ['- none recorded']),
+			'',
+			'Pages that were never opened are not evidence of health.',
+			'',
+		);
+
+		if (this.findings.length === 0) return lines.join('\n');
 
 		const sorted = [...this.findings].sort(
 			(a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity],
 		);
-		const lines = [...head];
 		for (const severity of SEVERITY_ORDER) {
 			const group = sorted.filter((finding) => finding.severity === severity);
 			if (group.length === 0) continue;
