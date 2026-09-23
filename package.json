@@ -9,6 +9,8 @@
     "typecheck": "tsc --noEmit",
     "check:dedupe": "tsx tools/check-finding-dedupe.ts",
     "check:tabs": "tsx tools/check-tabs.ts",
+    "check:offsite": "tsx tools/check-offsite.ts",
+    "test": "npm run typecheck && npm run check:tabs && npm run check:dedupe && npm run check:offsite",
     "help": "tsx src/index.ts --help"
   },
   "engines": {

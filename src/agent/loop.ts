@@ -73,6 +73,31 @@ function isErrorPage(url: string): boolean {
 	return url.startsWith('chrome-error:') || url === 'about:blank' || url.startsWith('data:');
 }
 
+/**
+ * Whether a URL belongs to the application under test.
+ *
+ * A run followed a link into a vendor's website and spent the rest of its budget
+ * there. Those pages must not count towards coverage either: "this run reached 7
+ * pages" is a statement about the application, and a third-party marketing site is
+ * not one of its pages.
+ */
+export function isApplicationUrl(url: string, startUrl: string): boolean {
+	try {
+		const target = new URL(url);
+		const start = new URL(startUrl);
+		if (target.origin === start.origin) return true;
+		// Sibling subdomains are usually the same product - a login on
+		// app.example.com and help on docs.example.com. The leading dot matters:
+		// it is what stops notexample.com from matching example.com.
+		return (
+			target.hostname.endsWith(`.${start.hostname}`) ||
+			start.hostname.endsWith(`.${target.hostname}`)
+		);
+	} catch {
+		return false;
+	}
+}
+
 /** Playwright MCP prefixes snapshots with the page URL and title when it has them. */
 function parsePageInfo(snapshot: string): { url: string | null } {
 	const match = /^-\s*Page URL:\s*(\S+)/m.exec(snapshot);
@@ -95,7 +120,7 @@ export function describeOtherTabs(text: string): string | null {
 	const others = tabs.filter((match) => match[2] === undefined);
 	if (others.length === 0) return null;
 	const listed = others.map((match) => `"${match[3]}" at ${match[4]}`);
-	return `This browser now has ${tabs.length} open tabs. Tab 0 is the current one. Also open: ${listed.join('; ')}. A click that opens a new tab leaves the current page unchanged, and that is NOT a broken link - the destination did open, in the other tab. Before reporting a link as dead, check this list.`;
+	return `This browser now has ${tabs.length} open tabs. Tab 0 is the current one. Also open: ${listed.join('; ')}. A click that opens a new tab leaves the current page unchanged, and that is NOT a broken link - the destination did open, in the other tab. The fact that the link works is all you needed from it: carry on exploring the application under test rather than moving into the other tab.`;
 }
 
 /**
@@ -284,7 +309,13 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 
 			const info = parsePageInfo(call.text);
 			if (info.url) currentUrl = info.url;
-			if (currentUrl !== null && !isErrorPage(currentUrl)) artifacts.addVisitedUrl(currentUrl);
+			if (
+				currentUrl !== null &&
+				!isErrorPage(currentUrl) &&
+				isApplicationUrl(currentUrl, config.startUrl)
+			) {
+				artifacts.addVisitedUrl(currentUrl);
+			}
 
 			// A tool call that failed is a mistake in the instruction, or the machine,
 			// and never a defect in the application under test. The model cannot tell the
@@ -410,7 +441,26 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 					'',
 					observed,
 				].join('\n');
-				observationLabel = 'Correction needed (unverified claim) ';
+				observationLabel = 'Correction needed (unverified claim)';
+			}
+
+			// Wandering off the application. Prompt rules have not been enough here either:
+			// a run followed a link into the vendor's own site and spent the rest of its
+			// budget exploring that instead, while reporting it as if it were the app.
+			if (
+				currentUrl !== null &&
+				!isErrorPage(currentUrl) &&
+				!isApplicationUrl(currentUrl, config.startUrl)
+			) {
+				log.dim(`off the application under test: ${currentUrl} - pushing the model back`);
+				observed = [
+					`You are now at ${currentUrl}, which is not part of the application under test (${config.startUrl}).`,
+					'A link led you out of it. What you find here is not about this application, so it does not belong in the findings or the guide.',
+					'Note that the link works, go back, and continue exploring the application itself.',
+					'',
+					observed,
+				].join('\n');
+				observationLabel = 'Correction needed (you left the application)';
 			}
 		}
 

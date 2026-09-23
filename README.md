@@ -62,20 +62,29 @@ Output lands in `runs/<timestamp>/`.
 
 ## Measured performance
 
-Numbers below are from one developer machine, because "runs locally" is only
-useful if you know what it costs. Qwen2.5 7B, AMD RX 6900 XT via Vulkan:
+Numbers from one developer machine, because "runs locally" is only useful if you
+know what it costs. AMD RX 6900 XT via Vulkan.
 
-| | |
-|---|---|
-| Prompt processing | **271 tokens/s** |
-| Generation | **55 tokens/s** |
-| One ~1.5k-token observation | ~6 s |
-| Full agent step (observe + decide + act) | **~11 s** |
-| A 20-step exploration | **~4 minutes** |
+**Qwen2.5 7B, measured in isolation:** 271 tokens/s prompt processing and 55
+tokens/s generation, which puts a ~1.5k-token observation at about 6 seconds and a
+full step at about 11.
 
-That measurement is what drove the design: at 271 tokens/s of prompt processing,
-sending screenshots instead of accessibility trees would roughly double every
-step. So structure first, pixels only where structure cannot see.
+**Qwen2.5 14B, measured end to end:** a 15-step exploration of a public practice
+site used 31,557 prompt tokens, 1,610 output tokens, and 84 seconds of model time.
+The first step took ~19 seconds because it loads the weights; after that, steps
+ranged from 3 to 9 seconds.
+
+That spread is larger than it looks, and it matters when choosing a model: 5.6
+seconds per step on average is a better outcome than the 7B throughput figure above
+would predict. But those two numbers were produced in different ways - one is
+throughput measured on a benchmark, the other is a whole run measured end to end -
+so they are not directly comparable, and I would rather flag that than let the
+juxtaposition imply a conclusion I have not actually tested.
+
+What the numbers did decide is the observation format: at 271 tokens/s of prompt
+processing, sending screenshots instead of accessibility trees would mean paying
+for an image's worth of tokens on every single step. So structure first, pixels
+only where structure cannot see.
 
 ## Design decisions
 
@@ -115,8 +124,17 @@ steps one to eight are still on disk.
 ## What the harness does for a small model
 
 A 7B model is a mediocre autonomous agent. The interesting engineering is not
-pretending otherwise and pushing the reliability into the harness instead. Three
-of these were written because a run failed without them:
+pretending otherwise - it is moving the reliability out of the prompt and into the
+harness.
+
+Every item below exists because a specific run failed in a specific way, and the
+failure is named in the code comment above it. Six of them are responses to the same
+lesson, which took me most of a day to accept:
+
+> Three separate prompt rules - use absolute URLs, use `browser_select_option` for
+> dropdowns, and widen your exploration after a while - were each ignored by the
+> model in a way I could measure. All three ended up enforced in code instead. A
+> prompt is how you explain intent to a model; it is not how you make it behave.
 
 **A shortlist of real element refs.** Left alone, the model hunts for a target in
 a wall of snapshot text and often names a ref that does not exist. Playwright
@@ -183,11 +201,30 @@ One malformed URL became three separate high-severity "findings" about an
 application that was working fine. Findings produced on a failed step are dropped,
 and the model is told, in the observation, why they cannot be findings.
 
-**The pattern is worth stating plainly.** Three rules in that prompt have now been
-ignored in a way I could measure: use absolute URLs, use `browser_select_option` for
-dropdowns, and widen your exploration when you have been on one page for a while.
-Every one of them ended up enforced in code instead. A prompt is how you explain
-intent to a model; it is not how you make it behave.
+**A note that names something the browser never showed is not kept.** The
+`learned` field is the only source for `app-guide.md`, so an invention in it does
+not stay in a chat log - it is written into documentation a colleague is meant to
+trust. And it does invent. A run claimed the A/B testing page "contains a button
+labeled 'Toggle'", twice. That page contains no `<button>` and no `<input>` element
+at all, and the string "toggle" appears nowhere in its 1,850 bytes of HTML.
+Checking took one HTTP request and a regex.
+
+Naming an element means quoting its name, and a quoted name either appears in what
+the browser returned or it does not, so the loop checks and drops the note, then
+tells the model why. On its first run this caught a second invention - 'Version A'
+and 'Version B' - and the model withdrew the claim on the following step.
+
+**It is kept on the application.** The prompt says not to follow links to other
+hosts. A run followed one anyway - through a tab - and spent the rest of its budget
+on the vendor's website, describing it as though it were the application. Pages
+outside the application's own host are now excluded from coverage, and the model is
+told plainly that what it finds out there belongs in neither artefact.
+
+That one was self-inflicted, and it is the most useful thing in this file. The tab
+awareness added two sections earlier was written to stop false "broken link"
+reports, and it did - by pointing the model at the other tab. Fixing one failure
+mode created a new one, and the only reason I know is that every run is read rather
+than trusted.
 
 **Coverage is recorded, and an empty report says so.** A thorough clean run and a
 lazy one both produce a findings file with nothing in it, and that ambiguity is the
@@ -204,12 +241,15 @@ run dies partway through.
 ## Limitations, stated plainly
 
 - **It explores; it does not verify.** `findings.md` is a list of leads to
-  reproduce, not confirmed defects. The header of the file says so.
+  reproduce, not confirmed defects. The header of the file says so. Notes are
+  checked for invented element names; they are not checked for accuracy.
 - **Small models plan badly over long horizons.** Which is why steps are short,
   the observation window is small, and the loop rejects actions that reference
   tools that do not exist rather than letting the run drift.
 - **No authentication.** Public applications only, for now.
-- **One tab.** The session is deliberately isolated per run.
+- **Tabs are noticed, not explored.** The loop reads the tab list, so a link that
+  opens in a new tab is not mistaken for a dead one, but the agent works in one tab
+  at a time.
 - **The guide is only as good as the run.** It describes what was touched, and it
   says nothing about what was not.
 
@@ -225,18 +265,42 @@ src/
     loop.ts         observe -> reason -> act -> record
     prompts.ts      explorer persona and the per-step contract
     artifacts.ts    findings.md, app-guide.md, run.jsonl
+    snapshot.ts     real element refs, harvested from the accessibility tree
+    evidence.ts     checks a claim against what the browser actually returned
   util/log.ts       ASCII-only console output
 tools/
-  check-finding-dedupe.ts  threshold calibration for finding de-duplication
   check-tabs.ts            open-tab parser, pinned to a real tool result
+  check-finding-dedupe.ts  threshold calibration for finding de-duplication
+  check-offsite.ts         which URLs count as the application
 ```
+
+## Checks
+
+`npm test` runs the typecheck and three small calibration checks. They are not unit
+tests for their own sake - each one pins a decision that a run got wrong, so that a
+later change cannot quietly bring the failure back.
+
+| Check | What it pins |
+|---|---|
+| `check:tabs` | the open-tab parser, against the literal tool output behind a false "broken link" finding |
+| `check:dedupe` | the similarity threshold, between real reworded duplicates and real distinct defects |
+| `check:offsite` | which URLs count as the application, lookalike hosts included |
+
+The de-duplication threshold is the clearest example of why these exist. Reworded
+reports of one issue measured 0.50 similarity, genuinely different defects measured
+at most 0.14, and the threshold sits between the two groups instead of on the edge
+of one. A number that is only in someone's head is a number the next person will
+change by accident.
 
 ## What is not built yet
 
-- **A verification pass.** The model sometimes states things it did not confirm -
-  a run described a page as having "two dropdown menus" when it had one. Every
-  claim in `learned` is currently taken at face value. Re-checking each one
-  before it reaches the guide would be the single biggest gain in trustworthiness.
+- **A full verification pass.** The name check described above catches a control
+  that was invented outright, which is the crudest kind of falsehood and the one
+  that reached the guide most often. It does not catch a claim that is subtly
+  wrong: a miscounted number of options, a flow described backwards, behaviour
+  that does not match what the page really does. Closing that gap means re-deriving
+  each claim from the evidence rather than checking whether its nouns appear, and
+  it is still the single biggest gain in trustworthiness available here.
 - **Promote discoveries into tests.** `browser_generate_locator` already returns a
   real Playwright locator for any element the agent found. Turning stable
   journeys into committed regression specs is the natural next step and the most
