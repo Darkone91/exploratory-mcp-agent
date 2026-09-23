@@ -372,6 +372,14 @@ change by accident.
   will get through. `npm run check:notes` holds nine real sentences from the
   committed run - including three that straddle the line between an observation and
   a plan - and is where a new phrasing will first show up as a failure.
+- **The model invents element refs when the shortlist is empty.** After a navigation,
+  Playwright sometimes returns the snapshot as a file link rather than inline, so
+  there are no refs to hand over and the model fills the gap. The committed example
+  does it twice - it asks to click `e2` and `e12`, both of which fail - and loses two
+  of its fourteen steps to it. The prompt says not to invent a ref; that sentence
+  should by now be read as a description of a bug rather than a rule. The fix is the
+  same shape as the others: reject a click or a type whose target is not in the
+  current shortlist, and ask for a snapshot first.
 - **A full verification pass.** The control check described above catches a control
   that was invented outright, quoted or not. It does not catch a claim that is
   subtly wrong: a count that is off, a flow described backwards, behaviour that does

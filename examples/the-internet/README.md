@@ -1,68 +1,69 @@
 # Example run
 
 The real, unedited output of one exploration, committed so you can read what the
-agent produces without installing Ollama, Playwright and a 14B model first.
+agent produces without installing Ollama, Playwright and a 9 GB model first.
 
 | | |
 |---|---|
 | Target | `https://the-internet.herokuapp.com/` — a public site of deliberately buggy practice pages |
 | Model | `qwen2.5:14b`, local, on an AMD RX 6900 XT |
 | Budget | 14 steps |
-| Result | **0 findings**, 3 pages reached, `step-limit` |
+| Result | **1 finding**, 2 pages reached, `model-finished` |
 
-## Start with `findings.md`
+## `findings.md` — and why the finding is probably wrong
 
-It reports no defects, and that is the part worth reading. A run that finds nothing
-and a run that *looked* at nothing produce identical files unless the report says
-what it covered, so it says so:
+One finding: right-clicking the box on the Context Menu page does not open a context
+menu. The agent is right about what it saw and wrong about the application. That menu
+is drawn by the browser, not by the page, so it can never appear in an accessibility
+snapshot. The agent did the only thing it could do - it looked, saw nothing, and
+reported that nothing happened. A human testing this page would call it a bug in the
+tool.
 
-> No defects were observed in this run.
+That is worth reading as the headline rather than as an embarrassment. The
+alternative - a tool that reports confident findings you have to double-check - is
+what the whole project is built to avoid, and a finding that describes its own
+evidence is at least actionable. It is also why the file opens with *"treat them as
+leads to reproduce, not as confirmed defects"*.
+
+## `app-guide.md` — the part that got better
+
+Roughly half the notes in an earlier example were the agent narrating its own
+intentions: *"The homepage contains a link to 'Checkboxes' which I am about to
+click."* Those are now trimmed off, and what is left is statements about the
+application:
+
+> The page contains instructions to right-click a box to open a context menu.
 >
-> Read that with the coverage below in mind: 14 steps reached 3 pages.
+> The page instructs to right-click in the box to open a context menu, but the action
+> did not produce any visible change or menu.
 >
-> - https://the-internet.herokuapp.com/
-> - https://the-internet.herokuapp.com/abtest
-> - https://the-internet.herokuapp.com/checkboxes
->
-> Pages that were never opened are not evidence of health.
+> The page instructs to right-click in the box below to see a context menu item called
+> 'the-internet'; attempting to verify this action.
 
-The application has twelve linked example pages. Three were opened. So this report
-is not a statement that the application is healthy, and it now refuses to look like
-one.
+The second and third lines are the interesting ones. The page *claims* a context menu
+will appear. An earlier version of this agent reported that the menu did appear - it
+had copied the page's own instructions and presented them as an observation. Now it
+says what it can support: the page instructs this, and the instruction was not
+confirmed. That distinction is the point of the project.
 
-That matters more than a screenshot of a bug list, because a tool that overstates
-what it examined is worse than no tool. The same instinct shows up in `run.jsonl`,
-which keeps the raw evidence behind every claim: when a report looks wrong, the
-first question is always what it actually saw.
+## What is still bad in it
 
-## Then `app-guide.md`
+Read "Path taken" and you can watch the agent struggle. Steps 8 and 11 are marked
+**failed**: it asked to click refs `e2` and `e12`, which never existed. It had just
+navigated, Playwright returned the snapshot as a file link rather than inline, so the
+shortlist was empty and the model filled the gap by inventing refs - precisely what
+the prompt tells it not to do.
 
-Two parts. `Pages reached` is machine-gathered from what the browser loaded, not
-from what the model said it did. The notes beneath it are the model's own summary of
-each step, and there the checkboxes trail is a fair picture of what this is good at:
+Seven of the thirteen steps went into one page, and it reached 2 pages of a
+twelve-page application. That is poor coverage, and the report says so rather than
+implying otherwise.
 
-> The Checkboxes page contains two checkboxes and a paragraph describing the purpose
-> of the page.
->
-> The first checkbox is now checked after clicking it.
->
-> The second checkbox is now unchecked after clicking it.
+Both are next on the list. The second is why the loop counts distinct pages reached
+and pushes the model to widen when that count stays low.
 
-That is a usable behavioural description of a page, built without anyone writing a
-test for it.
+## One thing that postdates this run
 
-It is also only about half the notes. The rest are narration rather than
-observation - "Navigating back to the homepage to explore another link" tells a
-reader nothing they could act on. Tightening that is the next piece of work, and it
-is written up in the parent README as a known gap rather than tidied away here.
-
-## `run.jsonl`
-
-One JSON object per step: the tool called, the arguments, what the model wrote
-down, timings and token counts, and a preview of what the browser returned. This is
-the file that settles arguments.
-
-## `summary.json`
-
-Counts and the stop reason. `distinct pages reached` is the number quoted in
-`findings.md`.
+Coverage now appears as its own section in `findings.md`, on every run rather than
+only on runs that found nothing. This run was captured before that change, so its
+`findings.md` does not show the section; `npm test` covers what the current renderer
+produces.
