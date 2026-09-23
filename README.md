@@ -65,6 +65,12 @@ npm start -- --url https://the-internet.herokuapp.com --steps 15 --model qwen2.5
 Output lands in `runs/<timestamp>/`. `npm test` runs the typecheck and the
 calibration checks described further down.
 
+Be patient with the first step. The model has to be loaded into memory before
+anything happens, so expect 20 to 50 seconds of silence, and the loop prints a step
+only once that step's tool call has returned. A run is roughly two minutes after
+that. I have twice mistaken a perfectly healthy run for a hung one during that
+pause, which is usually a good sign that something should be said about it here.
+
 If you only run one model, run the 14B: it reasons noticeably better about what is
 worth probing. Do read the timings below before assuming that costs you time.
 
@@ -139,10 +145,11 @@ Every item below exists because a specific run failed in a specific way, and the
 failure is named in the code comment above it. Six of them are responses to the same
 lesson, which took me most of a day to accept:
 
-> Three separate prompt rules - use absolute URLs, use `browser_select_option` for
-> dropdowns, and widen your exploration after a while - were each ignored by the
-> model in a way I could measure. All three ended up enforced in code instead. A
-> prompt is how you explain intent to a model; it is not how you make it behave.
+> Prompt rules have failed here, measurably, over and over: use absolute URLs, use
+> `browser_select_option` for dropdowns, widen your exploration after a while, write
+> observations rather than plans. Every one of them ended up enforced in code
+> instead. A prompt is how you explain intent to a model; it is not how you make it
+> behave.
 
 **A shortlist of real element refs.** Left alone, the model hunts for a target in
 a wall of snapshot text and often names a ref that does not exist. Playwright
@@ -160,8 +167,8 @@ would be caught by a naive "no repeats" rule.
 
 **It is told where it is.** The model cannot see the address bar, so it guesses -
 and guesses are relative paths like `/login`, which fail and burn a step. The
-current URL is parsed out of each snapshot and put in front of it, and the prompt
-says plainly that `browser_navigate` needs a complete URL.
+current URL is parsed out of each snapshot and put in front of it. That alone was
+not enough to stop the guessing; see the navigation item below.
 
 **A hard budget on the console.** Reading the console is nearly free, which is
 exactly why it is a trap: the same page reports the same error every time. One run
@@ -221,7 +228,22 @@ Naming an element means quoting its name, and a quoted name either appears in wh
 the browser returned or it does not, so the loop checks and drops the note, then
 tells the model why. On its first run this caught a second invention - 'Version A'
 and 'Version B' - and the model withdrew the claim on the following step.
+Then a later run walked straight through the gap I had left. The same page grew "a
+button to refresh the page" - unquoted, so nothing was checked, and it went into the
+guide. That page has no buttons at all, and the word "refresh" appears nowhere on
+it. The quoted case had never been protected by the check being clever; it was
+protected by "toggle" being a rare enough string that its absence proved something.
+"Button" is ordinary English that a model reaches for when it is filling a gap, so
+its absence proves something too - as long as the claim is looked at.
 
+Control words are now checked against the roles in the accessibility tree: a claim
+saying "a button" when no button has appeared in the run is not describing something
+observed. The word list is deliberately short and holds only words that mean one
+thing, because a check that guesses wrong makes false accusations, and a false
+accusation is worse than a miss. `npm run check:evidence` holds both mechanisms,
+including the unquoted claim that got through and the synonym that would otherwise
+produce a false alarm: "dropdown" has to be accepted where the tree says
+`combobox`.
 **It is kept on the application.** The prompt says not to follow links to other
 hosts. A run followed one anyway - through a tab - and spent the rest of its budget
 on the vendor's website, describing it as though it were the application. Pages
@@ -303,6 +325,7 @@ tools/
   check-finding-dedupe.ts  threshold calibration for finding de-duplication
   check-offsite.ts         which URLs count as the application
   check-notes.ts           note trimming, against real sentences from a run
+  check-evidence.ts        claim checking, quoted names and bare control words
 examples/
   the-internet/            one complete run, kept so the output can be read
                            without running anything
@@ -320,6 +343,7 @@ later change cannot quietly bring the failure back.
 | `check:dedupe` | the similarity threshold, between real reworded duplicates and real distinct defects |
 | `check:offsite` | which URLs count as the application, lookalike hosts included |
 | `check:notes` | note trimming, against nine real sentences from the committed run |
+| `check:evidence` | claim checking, including the unquoted invention that got through |
 
 The de-duplication threshold is the clearest example of why these exist. Reworded
 reports of one issue measured 0.50 similarity, genuinely different defects measured
@@ -334,13 +358,15 @@ change by accident.
   will get through. `npm run check:notes` holds nine real sentences from the
   committed run - including three that straddle the line between an observation and
   a plan - and is where a new phrasing will first show up as a failure.
-- **A full verification pass.** The name check described above catches a control
-  that was invented outright, which is the crudest kind of falsehood and the one
-  that reached the guide most often. It does not catch a claim that is subtly
-  wrong: a miscounted number of options, a flow described backwards, behaviour
-  that does not match what the page really does. Closing that gap means re-deriving
-  each claim from the evidence rather than checking whether its nouns appear, and
-  it is still the single biggest gain in trustworthiness available here.
+- **A full verification pass.** The control check described above catches a control
+  that was invented outright, quoted or not. It does not catch a claim that is
+  subtly wrong: a count that is off, a flow described backwards, behaviour that does
+  not match what the page really does, or a control named with the wrong role. One
+  run described the A/B testing page as displaying "two versions of a paragraph"
+  when it displays one paragraph explaining what A/B testing is, and no check here
+  would have noticed. Closing that gap means re-deriving each claim from the
+  evidence rather than checking whether its nouns appear, and it is still the single
+  biggest gain in trustworthiness available.
 - **Promote discoveries into tests.** `browser_generate_locator` already returns a
   real Playwright locator for any element the agent found. Turning stable
   journeys into committed regression specs is the natural next step and the most

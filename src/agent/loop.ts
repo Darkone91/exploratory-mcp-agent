@@ -11,7 +11,7 @@ import { chat } from '../llm/ollama.js';
 import { BrowserSession } from '../mcp/playwright.js';
 import { log, colour } from '../util/log.js';
 import { RunArtifacts, parseFinding, type StepRecord } from './artifacts.js';
-import { unsupportedTerms } from './evidence.js';
+import { unsupportedControlWords, unsupportedTerms } from './evidence.js';
 import { cleanNote } from './notes.js';
 import { buildStepPrompt, buildSystemPrompt, type AgentDecision } from './prompts.js';
 import { extractActions, type SnapshotAction } from './snapshot.js';
@@ -346,11 +346,19 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 			};
 			artifacts.record(record);
 
-			// Notes are checked twice over: a plan is not an observation, and a named
-			// element either appears in what the browser returned or it does not.
+			// Notes are checked twice over: a plan is not an observation, and a control the
+			// claim names either appears in what the browser returned or it does not.
+			// Both quoted names and bare control words are checked, because the model
+			// invented a control without quoting it and the quoted-only check let it past.
 			const cleaned = learned === '' ? { note: null, trimmed: false } : cleanNote(learned);
+			const corpus = evidence.join('\n');
 			const unverified =
-				cleaned.note === null ? [] : unsupportedTerms(cleaned.note, evidence.join('\n'));
+				cleaned.note === null
+					? []
+					: [
+							...unsupportedTerms(cleaned.note, corpus),
+							...unsupportedControlWords(cleaned.note, corpus),
+						];
 
 			if (cleaned.trimmed) {
 				log.dim(

@@ -11,7 +11,8 @@
     "check:tabs": "tsx tools/check-tabs.ts",
     "check:offsite": "tsx tools/check-offsite.ts",
     "check:notes": "tsx tools/check-notes.ts",
-    "test": "npm run typecheck && npm run check:tabs && npm run check:dedupe && npm run check:offsite && npm run check:notes",
+    "check:evidence": "tsx tools/check-evidence.ts",
+    "test": "npm run typecheck && npm run check:tabs && npm run check:dedupe && npm run check:offsite && npm run check:notes && npm run check:evidence",
     "help": "tsx src/index.ts --help"
   },
   "engines": {

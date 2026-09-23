@@ -55,10 +55,19 @@ const INTENTION_MARKERS: RegExp[] = [
  * itself.
  */
 const LEADING_ACTION =
-	/^(?:now\s+)?(?:navigating|taking|clicking|exploring|opening|switching|trying|checking|inspecting|reviewing|scrolling|typing|selecting|understanding|looking|going|moving|returning|navigate|take|click|explore|open|switch|try|check|inspect|review|scroll|type|select|understand|look|go|move|return)\b/i;
+	/^(?:now\s+)?(?:navigating|navigated|navigate|taking|took|take|clicking|clicked|click|exploring|explored|explore|opening|opened|open|switching|switched|switch|trying|tried|try|checking|checked|check|inspecting|inspected|inspect|reviewing|reviewed|review|scrolling|scrolled|scroll|typing|typed|type|selecting|selected|select|understanding|understood|understand|looking|looked|look|going|went|go|moving|moved|move|returning|returned|return)\b/i;
 
 /** "to explore", "to understand", "to see" - the agent justifying its next move. */
 const PURPOSE_CLAUSE = /\bto\s+(?:explore|understand|see|check|find|verify|investigate|discover|learn|confirm|look)\b/i;
+
+/**
+ * Movement, past tense. Always narration - "Navigated back to the homepage" records
+ * that the agent moved, not that the application does anything. Past tense is safe
+ * to drop unconditionally because an observation about an application is written in
+ * the present: "Switching tabs resets the form" survives, "Switched to the new tab"
+ * does not.
+ */
+const MOVEMENT_NARRATION = /^(?:navigated|went|returned|moved|switched|refreshed|reloaded)\b/i;
 
 /** The agent talking about itself. */
 const FIRST_PERSON = /\b(?:I|I'm|I'll|my)\b/;
@@ -76,6 +85,7 @@ export function cleanNote(claim: string): CleanedNote {
 	const opensWithAnAction = LEADING_ACTION.test(text);
 	const isAboutTheAgent = PURPOSE_CLAUSE.test(text) || FIRST_PERSON.test(text);
 	if (opensWithAnAction && isAboutTheAgent) return { note: null, trimmed: true };
+	if (MOVEMENT_NARRATION.test(text)) return { note: null, trimmed: true };
 
 	let cut = text.length;
 	for (const marker of INTENTION_MARKERS) {
@@ -88,6 +98,13 @@ export function cleanNote(claim: string): CleanedNote {
 	const factual = text
 		.slice(0, cut)
 		.trim()
+		.replace(/[,;:]+$/, '')
+		// Cutting at a marker leaves the connective that introduced it: "...contains
+		// options, but I need to explore other parts" trims to "...contains options,
+		// but." A sentence ending on a conjunction reads as truncated, which is exactly
+		// the fragment problem this threshold exists to prevent, so the connective goes
+		// too.
+		.replace(/\s+\b(?:and|but|or|so|then|which|that|because|while|when|as|also)\b$/i, '')
 		.replace(/[,;:]+$/, '')
 		.trim();
 

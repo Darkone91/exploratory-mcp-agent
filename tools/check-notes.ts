@@ -66,6 +66,12 @@ const CASES: Case[] = [
 		after: 'The first checkbox is unchecked.',
 		kind: 'trimmed',
 	},
+	{
+		before:
+			'The dropdown menu was interactable and contains options, but I need to explore other parts of the application.',
+		after: 'The dropdown menu was interactable and contains options.',
+		kind: 'trimmed',
+	},
 
 	// --- pure narration: nothing observed, so nothing to keep ----------------------
 	{
@@ -89,6 +95,23 @@ const CASES: Case[] = [
 		before: 'Selecting an option from the dropdown updates the page without a reload.',
 		after: 'Selecting an option from the dropdown updates the page without a reload.',
 		kind: 'kept',
+	},
+	{
+		before: "Clicking the 'Add Element' button adds a new element to the page.",
+		after: "Clicking the 'Add Element' button adds a new element to the page.",
+		kind: 'kept',
+	},
+
+	// --- movement, past tense: records that the agent moved, not what the app does --
+	{
+		before: 'Navigated back to the homepage.',
+		after: null,
+		kind: 'dropped',
+	},
+	{
+		before: "Clicked the 'Elemental Selenium' link to explore further.",
+		after: null,
+		kind: 'dropped',
 	},
 ];
 

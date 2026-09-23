@@ -119,6 +119,7 @@ function similarity(a: Set<string>, b: Set<string>): number {
 export class RunArtifacts {
 	private readonly steps: StepRecord[] = [];
 	private readonly notes: string[] = [];
+	private readonly noteKeys = new Set<string>();
 	private readonly findings: Finding[] = [];
 	private readonly visitedUrls: string[] = [];
 	private readonly jsonlPath: string;
@@ -135,6 +136,13 @@ export class RunArtifacts {
 	addNote(note: string): void {
 		const clean = note.replace(/\s+/g, ' ').trim();
 		if (clean === '') return;
+		// A model working one page for several steps restates the same observation every
+		// time. One run put this line into the guide six times: "The dropdown menu is
+		// currently selected with a disabled option 'Please select an option'." Six
+		// copies of a true sentence is still a worse document than one copy of it.
+		const key = clean.toLowerCase().replace(/[^a-z0-9 ]+/g, '');
+		if (this.noteKeys.has(key)) return;
+		this.noteKeys.add(key);
 		this.notes.push(clean);
 	}
 
