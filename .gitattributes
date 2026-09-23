@@ -1,0 +1,5 @@
+# Normalise line endings in the repository, so a Windows checkout and a Linux
+# checkout do not rewrite every file. The agent writes its artefacts with LF
+# endings and they should stay that way when committed. run.jsonl in particular is
+# plain text - one JSON object per line - and must stay diffable.
+* text=auto eol=lf
