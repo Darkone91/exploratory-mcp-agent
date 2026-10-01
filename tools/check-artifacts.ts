@@ -9,7 +9,7 @@
  *
  * Run: npm test
  */
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -34,6 +34,7 @@ function step(overrides: Partial<StepRecord>): StepRecord {
 		finding: null,
 		noteKept: null,
 		noteIssue: null,
+		refused: null,
 		toolMs: 1,
 		llmMs: 1,
 		promptTokens: 1,
@@ -53,6 +54,7 @@ try {
 		url: 'https://example.com/',
 		model: 'test-model',
 		startedAt: '2026-01-01T00:00:00.000Z',
+		promptVersion: 'test-v1',
 	});
 	withFindings.addVisitedUrl('https://example.com/');
 	withFindings.addVisitedUrl('https://example.com/broken');
@@ -64,6 +66,14 @@ try {
 	});
 	withFindings.record(step({ step: 1, noteKept: 'The homepage lists two links.', noteIssue: null }));
 	withFindings.record(step({ step: 2, noteKept: null, noteIssue: 'a plan, not an observation' }));
+	withFindings.record(
+		step({
+			step: 3,
+			tool: 'browser_navigate',
+			args: { url: 'http://169.254.169.254/' },
+			refused: 'refused: 169.254.169.254 is not part of the application under test',
+		}),
+	);
 	withFindings.finalise(['stop reason: step-limit']);
 
 	const findings = readFileSync(path.join(dir, 'findings.md'), 'utf8');
@@ -71,7 +81,7 @@ try {
 	check('findings.md reports coverage even when there are findings', findings.includes('## Coverage'));
 	check('coverage names the pages reached', findings.includes('https://example.com/broken'));
 	check('coverage keeps the warning line', findings.includes('not evidence of health'));
-	check('coverage counts the steps', findings.includes('2 steps reached 2 pages'));
+	check('coverage counts the steps', findings.includes('3 steps reached 2 pages'));
 
 	// --- the transcript explains itself -------------------------------------------
 	const transcript = readFileSync(path.join(dir, 'run.jsonl'), 'utf8')
@@ -80,6 +90,10 @@ try {
 		.map((line) => JSON.parse(line) as StepRecord);
 	check('the transcript records the note that was kept', transcript[0]?.noteKept === 'The homepage lists two links.');
 	check('the transcript records why one was dropped', transcript[1]?.noteIssue === 'a plan, not an observation');
+	check(
+		'the transcript records a step the harness refused',
+		typeof transcript[2]?.refused === 'string' && transcript[2].refused !== '',
+	);
 
 	// --- a run that found nothing --------------------------------------------------
 	const cleanDir = mkdtempSync(path.join(tmpdir(), 'artefacts-clean-'));
@@ -88,6 +102,7 @@ try {
 			url: 'https://example.com/',
 			model: 'test-model',
 			startedAt: '2026-01-01T00:00:00.000Z',
+			promptVersion: 'test-v1',
 		});
 		clean.addVisitedUrl('https://example.com/');
 		clean.record(step({ step: 1 }));
@@ -97,6 +112,35 @@ try {
 		check('an empty run still reports coverage', text.includes('## Coverage'));
 	} finally {
 		rmSync(cleanDir, { recursive: true, force: true });
+	}
+
+	// --- a run that died before it recorded a step ---------------------------------
+	// The loop writes its artefacts on the way out of a failed run, which is the one
+	// moment nobody is watching the console. A run directory that holds three of its
+	// four files would be a puzzle at exactly the wrong time.
+	const deadDir = mkdtempSync(path.join(tmpdir(), 'artefacts-dead-'));
+	try {
+		const dead = new RunArtifacts(deadDir, {
+			url: 'https://example.com/',
+			model: 'test-model',
+			startedAt: '2026-01-01T00:00:00.000Z',
+			promptVersion: 'test-v1',
+		});
+		dead.finalise(['model calls: 0', 'stop reason: error']);
+		for (const file of ['findings.md', 'app-guide.md', 'summary.json', 'run.jsonl']) {
+			check(`a run that died before step one still writes ${file}`, existsSync(path.join(deadDir, file)));
+		}
+		const deadSummary = JSON.parse(readFileSync(path.join(deadDir, 'summary.json'), 'utf8')) as {
+			lines?: string[];
+			promptVersion?: string;
+		};
+		check(
+			'and records how it stopped',
+			deadSummary.lines?.includes('stop reason: error') === true,
+		);
+		check('and which prompt produced it', deadSummary.promptVersion === 'test-v1');
+	} finally {
+		rmSync(deadDir, { recursive: true, force: true });
 	}
 } finally {
 	rmSync(dir, { recursive: true, force: true });

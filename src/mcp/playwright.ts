@@ -6,8 +6,10 @@
  * in the server, the reasoning lives here, and the boundary between them is a
  * documented protocol rather than a pile of selectors.
  *
- * The server exposes ~60 tools across several opt-in capabilities. Handing all of
- * them to a 7B model would burn most of the context window on tool schemas it
+ * The server this pins - `@playwright/mcp` 0.0.82, with the testing capability on -
+ * lists thirty tools across its opt-in capabilities, counted by asking it rather
+ * than remembered from a README. Handing all of them to a 7B model would burn most
+ * of the context window on tool schemas it
  * will never use, so `CURATED_TOOLS` narrows the surface to the ones an
  * exploratory run actually needs. Everything else stays available to humans via
  * the MCP inspector.

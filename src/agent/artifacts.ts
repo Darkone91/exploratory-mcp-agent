@@ -8,7 +8,7 @@
  * The raw transcript is kept alongside them as JSONL, because when a report
  * looks wrong the first question is always "what did it actually see".
  */
-import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 export type Severity = 'high' | 'medium' | 'low';
@@ -41,6 +41,15 @@ export interface StepRecord {
 	 * that is the first question when the guide looks thin.
 	 */
 	noteIssue: string | null;
+	/**
+	 * Set when the harness refused the action before it ran - a tool that does not
+	 * exist, the console read twice on one page, a navigation out of the application.
+	 *
+	 * Recorded because a refusal costs a step and produces nothing, and "the run took
+	 * nine steps and established almost nothing" is a different story once the
+	 * transcript can say that four of them were refused.
+	 */
+	refused: string | null;
 	toolMs: number;
 	llmMs: number;
 	promptTokens: number;
@@ -139,7 +148,17 @@ export class RunArtifacts {
 
 	constructor(
 		readonly dir: string,
-		private readonly meta: { url: string; model: string; startedAt: string },
+		private readonly meta: {
+			url: string;
+			model: string;
+			startedAt: string;
+			/**
+			 * Which prompt produced these notes. Recorded because a run's notes are only
+			 * as good as the contract the model was working to, and app-guide.md outlives
+			 * the version of the prompt that wrote it.
+			 */
+			promptVersion: string;
+		},
 	) {
 		mkdirSync(dir, { recursive: true });
 		this.jsonlPath = path.join(dir, 'run.jsonl');
@@ -213,6 +232,10 @@ export class RunArtifacts {
 	/** Build and persist every artefact at the end of a run. */
 	finalise(summaryLines: string[]): string[] {
 		const written: string[] = [];
+		// A run that recorded no steps still gets the file, so which artefacts a run
+		// directory holds never depends on how far the run got. This matters most on
+		// the path where the run died early, which is exactly when someone is looking.
+		if (!existsSync(this.jsonlPath)) writeFileSync(this.jsonlPath, '', 'utf8');
 		writeFileSync(path.join(this.dir, 'findings.md'), this.renderFindings(), 'utf8');
 		written.push('findings.md');
 		writeFileSync(path.join(this.dir, 'app-guide.md'), this.renderGuide(), 'utf8');

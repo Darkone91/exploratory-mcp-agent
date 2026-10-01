@@ -35,6 +35,9 @@ Options
   --url <url>        Application to explore (required, or set START_URL).
   --steps <n>        Maximum actions before stopping.            default 12
   --model <tag>      Ollama model.                       default qwen2.5:7b
+  --browser <name>   Browser the MCP server drives.     default chromium
+  --allow-host <h>   Extra host the agent may navigate to, repeatable. A bare
+                     host also covers its subdomains. Anything else is refused.
   --headed           Show the browser window (this is the default).
   --headless         Hide it. Useful in CI, useless for watching.
   --out <dir>        Parent directory for run output.        default ./runs

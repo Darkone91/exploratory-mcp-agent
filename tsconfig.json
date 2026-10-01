@@ -18,5 +18,8 @@
     "isolatedModules": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src/**/*.ts"]
+  // tools/ is included as well as src/: the calibration checks are run by tsx,
+  // which strips types without checking them, so without this a check could import
+  // a field that no longer exists and still pass.
+  "include": ["src/**/*.ts", "tools/**/*.ts"]
 }

@@ -34,8 +34,12 @@ export interface Config {
 	runDir: string;
 	/** Extra CLI args handed to the Playwright MCP server. */
 	mcpArgs: string[];
-	/** Cap on console messages pulled into the prompt, per step. */
-	maxConsoleLines: number;
+	/**
+	 * Hosts the agent may reach besides the application's own, for flows a host
+	 * comparison cannot express - a login handed to an identity provider, or help
+	 * that lives on its own domain. A bare host covers its subdomains.
+	 */
+	allowedHosts: string[];
 }
 
 function flagValue(argv: string[], name: string): string | undefined {
@@ -49,6 +53,17 @@ function flagOn(argv: string[], name: string): boolean {
 	return argv.includes(`--${name}`);
 }
 
+/** Every value given for a repeatable flag, e.g. --allow-host a.example --allow-host b.example. */
+function flagValues(argv: string[], name: string): string[] {
+	const values: string[] = [];
+	for (let index = 0; index < argv.length; index += 1) {
+		if (argv[index] !== `--${name}`) continue;
+		const value = argv[index + 1];
+		if (value && !value.startsWith('--')) values.push(value);
+	}
+	return values;
+}
+
 export function loadConfig(argv: string[], env: NodeJS.ProcessEnv): Config {
 	const steps = Number(flagValue(argv, 'steps') ?? env.MAX_STEPS ?? 12);
 
@@ -57,11 +72,19 @@ export function loadConfig(argv: string[], env: NodeJS.ProcessEnv): Config {
 		maxSteps: Number.isFinite(steps) && steps > 0 ? Math.floor(steps) : 12,
 		model: flagValue(argv, 'model') ?? env.OLLAMA_MODEL ?? 'qwen2.5:7b',
 		ollamaUrl: (env.OLLAMA_URL ?? 'http://127.0.0.1:11434').replace(/\/+$/, ''),
-		// --headed forces the window on; --headless opts out. Watching is default.
-		headless: flagOn(argv, 'headless') ? true : !flagOn(argv, 'headed'),
+		// Watching the agent work is the point, so the window is on unless the operator
+		// asks for it to be hidden. This used to read `--headless ? true : !--headed`,
+		// which made a hidden window the silent default - the opposite of what the
+		// README, the --help text and the field comment above all said, and of what
+		// anyone watching a terminal would notice. --headed is accepted as well, and
+		// wins if both are given: the failure that matters is a window hidden by
+		// accident, which nobody can see.
+		headless: flagOn(argv, 'headless') && !flagOn(argv, 'headed'),
 		browser: flagValue(argv, 'browser') ?? env.MCP_BROWSER ?? 'chromium',
 		runDir: flagValue(argv, 'out') ?? path.join(ROOT, 'runs'),
 		mcpArgs: (env.MCP_ARGS ?? '').split(' ').map((part) => part.trim()).filter(Boolean),
-		maxConsoleLines: Number(env.MAX_CONSOLE_LINES ?? 15),
+		allowedHosts: [...flagValues(argv, 'allow-host'), ...(env.ALLOWED_HOSTS ?? '').split(/[\s,]+/)]
+			.map((host) => host.trim())
+			.filter((host) => host !== ''),
 	};
 }

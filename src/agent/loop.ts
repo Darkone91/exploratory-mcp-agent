@@ -6,18 +6,25 @@
  * duplicate findings, and always leaving artefacts behind even if a run dies
  * halfway.
  */
+import path from 'node:path';
+
 import type { Config } from '../config.js';
-import { chat } from '../llm/ollama.js';
+import { chat, type ChatResult } from '../llm/ollama.js';
 import { BrowserSession } from '../mcp/playwright.js';
 import { log, colour } from '../util/log.js';
 import { RunArtifacts, parseFinding, type StepRecord } from './artifacts.js';
 import { unsupportedControlWords, unsupportedTerms } from './evidence.js';
+import {
+	clickBlockedReason,
+	isApplicationUrl,
+	isErrorPage,
+	navigationBlockedReason,
+	resolveNavigation,
+} from './navigation.js';
 import { cleanNote } from './notes.js';
-import { buildStepPrompt, buildSystemPrompt, type AgentDecision } from './prompts.js';
+import { buildStepPrompt, buildSystemPrompt, PROMPT_VERSION, type AgentDecision } from './prompts.js';
 import { extractActions, type SnapshotAction } from './snapshot.js';
 
-/** Snapshot budget. ~6k chars is roughly 1.5k tokens, which measures at ~6s. */
-const MAX_SNAPSHOT_CHARS = 6000;
 /** Tool output budget, so one verbose console dump cannot swallow the prompt. */
 const MAX_RESULT_CHARS = 2000;
 const SNAPSHOT_TOOL = 'browser_snapshot';
@@ -45,58 +52,9 @@ export interface ExploreOutcome {
 function truncate(text: string, max: number): string {
 	const clean = text.trim();
 	if (clean.length <= max) return clean;
-	return `${clean.slice(0, max)}\n\n[...truncated ${clean.length - max} characters. Take a fresh snapshot, or use browser_find to look something up instead of reading the whole page.]`;
-}
-
-/**
- * Resolve a navigation target against the current page.
- *
- * The prompt has told the model, in every version of this file, that
- * browser_navigate needs a complete absolute URL and that a bare path fails.
- * It used one anyway: a run sent "/abtest", Playwright looked for https://abtest/,
- * DNS failed, and the agent then reported the resulting error page as a
- * high-severity defect in the application. Prompts persuade; this enforces.
- */
-function resolveNavigation(target: string, base: string): string {
-	if (/^[a-z][a-z0-9+.-]*:/i.test(target)) return target;
-	try {
-		return new URL(target, base).toString();
-	} catch {
-		return target;
-	}
-}
-
-/**
- * Browser error pages are noise in a coverage list - nobody tested anything on
- * chrome-error://chromewebdata/.
- */
-function isErrorPage(url: string): boolean {
-	return url.startsWith('chrome-error:') || url === 'about:blank' || url.startsWith('data:');
-}
-
-/**
- * Whether a URL belongs to the application under test.
- *
- * A run followed a link into a vendor's website and spent the rest of its budget
- * there. Those pages must not count towards coverage either: "this run reached 7
- * pages" is a statement about the application, and a third-party marketing site is
- * not one of its pages.
- */
-export function isApplicationUrl(url: string, startUrl: string): boolean {
-	try {
-		const target = new URL(url);
-		const start = new URL(startUrl);
-		if (target.origin === start.origin) return true;
-		// Sibling subdomains are usually the same product - a login on
-		// app.example.com and help on docs.example.com. The leading dot matters:
-		// it is what stops notexample.com from matching example.com.
-		return (
-			target.hostname.endsWith(`.${start.hostname}`) ||
-			start.hostname.endsWith(`.${target.hostname}`)
-		);
-	} catch {
-		return false;
-	}
+	// Factual, not instructive: the model is told what to do about truncation in
+	// the system prompt, because everything wrapped as page data has to stay data.
+	return `${clean.slice(0, max)}\n\n[...truncated ${clean.length - max} characters of tool output.]`;
 }
 
 /** Playwright MCP prefixes snapshots with the page URL and title when it has them. */
@@ -153,15 +111,88 @@ function tryParse(text: string): AgentDecision | null {
 	}
 }
 
+interface VettedNote {
+	/** The candidate, after a plan has been trimmed off the end. Null when nothing survived. */
+	text: string | null;
+	/** Whether the candidate is fit for the guide. */
+	usable: boolean;
+	trimmed: boolean;
+	/** Terms the claim named that the browser never returned. */
+	unverified: string[];
+	/** Why the note was trimmed or dropped, or null when it went in untouched. */
+	issue: string | null;
+}
+
+/**
+ * Check a note the way the guide requires: a plan is not an observation, and a
+ * control a claim names either appears in what the browser returned or it does not.
+ *
+ * Both checks live in one place because there are two doors into app-guide.md - a
+ * step that acted, and the closing step that stopped - and only the first one used
+ * to be locked. The closing summary is the line a reader meets first.
+ */
+function vetNote(learned: string, corpus: string): VettedNote {
+	if (learned === '') {
+		return { text: null, usable: false, trimmed: false, unverified: [], issue: null };
+	}
+
+	const cleaned = cleanNote(learned);
+	const unverified =
+		cleaned.note === null
+			? []
+			: [
+					...unsupportedTerms(cleaned.note, corpus),
+					...unsupportedControlWords(cleaned.note, corpus),
+				];
+	const issue =
+		cleaned.note === null
+			? 'a plan, not an observation'
+			: unverified.length > 0
+				? `names ${unverified.join(', ')}, which the browser never returned`
+				: cleaned.trimmed
+					? 'plan trimmed off the end'
+					: null;
+
+	return {
+		text: cleaned.note,
+		usable: cleaned.note !== null && unverified.length === 0,
+		trimmed: cleaned.trimmed,
+		unverified,
+		issue,
+	};
+}
+
 export async function explore(config: Config, startedAt: string): Promise<ExploreOutcome> {
 	const artifacts = new RunArtifacts(config.runDir, {
 		url: config.startUrl,
 		model: config.model,
 		startedAt,
+		promptVersion: PROMPT_VERSION,
 	});
 
 	const totals = { promptTokens: 0, outputTokens: 0, llmMs: 0, toolMs: 0 };
 	let stopReason: ExploreOutcome['stopReason'] = 'step-limit';
+	/** How many times the model has been asked for a decision. */
+	let generation = 0;
+	let artefactsWritten = false;
+
+	/**
+	 * Write everything the run has produced.
+	 *
+	 * Called from two places on purpose: when the loop ends, and when it throws. A run
+	 * that dies at step nine - Ollama stops answering, the browser goes away - still
+	 * has nine steps of findings and notes, and throwing them away leaves the run
+	 * with nothing to show. The README promises this; it used to be true of the
+	 * transcript alone.
+	 */
+	const writeArtefacts = (): string[] => {
+		artefactsWritten = true;
+		return artifacts.finalise([
+			`model calls: ${generation}`,
+			`stop reason: ${stopReason}`,
+			`distinct pages reached: ${artifacts.visitedCount}`,
+		]);
+	};
 
 	log.info(
 		`model ${colour.cyan(config.model)}  browser ${config.browser}${config.headless ? ' headless' : ' visible'}`,
@@ -193,11 +224,17 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 			log.warn(`navigation reported an error: ${opening.text.slice(0, 200)}`);
 		}
 
-		let lastAction = `browser_navigate({"url":${JSON.stringify(config.startUrl)}})`;
-		let lastResult = truncate(opening.text, MAX_RESULT_CHARS);
-		let observed = lastResult;
-		let observationLabel = 'The page as loaded';
-		let generation = 0;
+		let lastAction = `browser_navigate(${JSON.stringify({ url: config.startUrl })})`;
+		let lastResult: string | null = truncate(opening.text, MAX_RESULT_CHARS);
+		let lastResultLabel = 'The page as loaded';
+		/**
+		 * What the harness wants done differently, or null.
+		 *
+		 * Held apart from the page data because the model is promised that anything
+		 * wrapped as page data is data and never an instruction. That promise is only
+		 * worth something if the instructions arrive somewhere else.
+		 */
+		let correction: string | null = null;
 		let nudgedForBreadth = false;
 		// Updated whenever a tool result carries a page URL, so entries in the
 		// transcript say where they happened rather than where we started.
@@ -214,7 +251,44 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 		// Pages whose console has already been read this run.
 		const consoleChecked = new Set<string>();
 
+		/**
+		 * Write down a step the harness refused.
+		 *
+		 * Nothing ran, so there is no tool result and no observation - but the step was
+		 * spent. Leaving it out of the transcript made the numbers in a report
+		 * unexplainable: a run shows nine steps and four of them produced nothing, and
+		 * nothing on disk says why.
+		 */
+		const recordRefusal = (
+			stepNumber: number,
+			model: ChatResult,
+			refusal: { tool: string; args: Record<string, unknown>; thought: string; reason: string },
+		): void => {
+			artifacts.record({
+				step: stepNumber,
+				at: new Date().toISOString(),
+				url: currentUrl,
+				thought: refusal.thought || null,
+				tool: refusal.tool,
+				args: refusal.args,
+				learned: null,
+				finding: null,
+				noteKept: null,
+				noteIssue: null,
+				refused: refusal.reason,
+				toolMs: 0,
+				llmMs: model.stats.totalMs,
+				promptTokens: model.stats.promptTokens,
+				outputTokens: model.stats.outputTokens,
+				resultPreview: '',
+				isError: false,
+				actions: [],
+			});
+		};
+
 		for (let step = 1; step <= config.maxSteps; step += 1) {
+			// A correction belongs to the step that earned it, never to the next one.
+			correction = null;
 			const llm = await chat(
 				[
 					{ role: 'system', content: system },
@@ -228,8 +302,8 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 							actions,
 							lastAction,
 							lastResult,
-							observed,
-							observationLabel,
+							lastResultLabel,
+							correction,
 						}),
 					},
 				],
@@ -246,9 +320,10 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 			} catch (error) {
 				log.warn(`step ${step}: ${error instanceof Error ? error.message : error}`);
 				lastAction = '(model returned unparseable output)';
-				lastResult = 'Your previous reply was not valid JSON. Return exactly one JSON object.';
-				observed = 'Retry the previous step: reply with a single JSON object only.';
-				observationLabel = 'Correction needed';
+				lastResult = null;
+				lastResultLabel = 'Result';
+				correction =
+					'Your previous reply was not valid JSON, so no action was taken. Return exactly one JSON object and nothing else.';
 				continue;
 			}
 
@@ -257,7 +332,38 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 			const finding = parseFinding(decision.finding);
 
 			if (decision.done === true) {
-				if (learned !== '') artifacts.addNote(learned);
+				// The closing note goes through the same two checks as every other step.
+				// It is the part of app-guide.md a reader meets first, and it used to be
+				// the one note nothing looked at.
+				const closing = vetNote(learned, evidence.join('\n'));
+				if (closing.usable && closing.text !== null) artifacts.addNote(closing.text);
+				if (finding !== null) artifacts.addFinding(finding);
+				if (closing.text !== null && !closing.usable) {
+					log.dim(`closing note not kept - ${closing.issue}`);
+				}
+				// Recorded like any other step. Without this, the closing summary sat in
+				// app-guide.md and nowhere in the transcript, which is the one question
+				// run.jsonl exists to answer: where did this line come from.
+				artifacts.record({
+					step,
+					at: new Date().toISOString(),
+					url: currentUrl,
+					thought: thought || null,
+					tool: null,
+					args: null,
+					learned: learned || null,
+					finding,
+					noteKept: closing.text,
+					noteIssue: closing.issue,
+					refused: null,
+					toolMs: 0,
+					llmMs: llm.stats.totalMs,
+					promptTokens: llm.stats.promptTokens,
+					outputTokens: llm.stats.outputTokens,
+					resultPreview: '',
+					isError: false,
+					actions: actions.map((action) => action.label),
+				});
 				log.step(step, config.maxSteps, `${colour.dim('done')} ${thought}`);
 				stopReason = 'model-finished';
 				break;
@@ -268,22 +374,24 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 
 			if (!toolNames.has(tool)) {
 				log.step(step, config.maxSteps, `${colour.yellow('rejected')} unknown tool "${tool}"`);
-				lastAction = `(rejected: ${tool})`;
-				lastResult = `"${tool}" is not available.`;
-				observed = `You asked for a tool that does not exist: "${tool}". Available: ${tools
+				lastAction = `(rejected) ${tool}`;
+				lastResult = null;
+				const message = `You asked for a tool that does not exist: "${tool}". Available: ${tools
 					.map((entry) => entry.name)
 					.join(', ')}.`;
-				observationLabel = 'Correction needed';
+				correction = message;
+				recordRefusal(step, llm, { tool, args, thought, reason: message });
 				continue;
 			}
 
 			if (tool === CONSOLE_TOOL && currentUrl !== null && consoleChecked.has(currentUrl)) {
 				log.step(step, config.maxSteps, `${colour.yellow('skipped')} console already read on this page`);
-				lastAction = `${tool}()`;
-				lastResult = '(skipped: the console on this page has already been read this run)';
-				observed =
+				lastAction = `(skipped) ${tool}()`;
+				lastResult = null;
+				const message =
 					'You have already read the console on this page. It reports the same lines every time, so reading it again cannot teach you anything. Do something that changes the page: click an element ref from the snapshot, type into a field, or move to a different part of the application.';
-				observationLabel = 'Correction needed';
+				correction = message;
+				recordRefusal(step, llm, { tool, args, thought, reason: message });
 				continue;
 			}
 
@@ -294,6 +402,46 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 					log.dim(`resolved "${requested}" against the current page -> ${resolved}`);
 					args.url = resolved;
 				}
+			}
+
+			// Where the browser is allowed to go, enforced rather than requested. The
+			// loop used to wait until the model had already arrived somewhere else and
+			// then spend a paragraph asking it to come back, and one request is all a
+			// page needs to aim the agent at a machine that is not on the internet. A
+			// click navigates just as surely as browser_navigate does, so the ref's
+			// destination is checked with it.
+			const clickedRef =
+				tool === 'browser_click' && typeof args.target === 'string'
+					? actions.find((action) => action.ref === args.target)
+					: undefined;
+			const destination =
+				tool === 'browser_navigate' && typeof args.url === 'string'
+					? args.url
+					: clickedRef?.url;
+			const blocked =
+				tool === 'browser_navigate' && typeof args.url === 'string'
+					? navigationBlockedReason(args.url, config.startUrl, config.allowedHosts)
+					: clickBlockedReason(
+							clickedRef,
+							config.startUrl,
+							config.allowedHosts,
+							// A link href is usually a path, so the guard needs the page it
+							// would be resolved against.
+							currentUrl,
+						);
+
+			if (blocked !== null) {
+				log.step(step, config.maxSteps, `${colour.yellow('blocked')} ${destination ?? ''}`);
+				lastAction = `(blocked) ${tool}(${JSON.stringify(args)})`;
+				lastResult = null;
+				const message = [
+					`The harness refused that action: ${blocked}.`,
+					'The browser only reaches the application under test, so nothing was loaded and nothing was learned from it.',
+					'Note that the link exists if that is worth recording, then carry on exploring the application itself.',
+				].join(' ');
+				correction = message;
+				recordRefusal(step, llm, { tool, args, thought, reason: message });
+				continue;
 			}
 
 			const call = await session.call(tool, args);
@@ -327,19 +475,12 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 				log.dim(`dropped finding "${finding.title}" - it came from a failed tool call, not from the application`);
 			}
 
-			// Notes are checked twice over: a plan is not an observation, and a control the
-			// claim names either appears in what the browser returned or it does not.
-			// Both quoted names and bare control words are checked, because the model
-			// invented a control without quoting it and the quoted-only check let it past.
-			const cleaned = learned === '' ? { note: null, trimmed: false } : cleanNote(learned);
-			const corpus = evidence.join('\n');
-			const unverified =
-				cleaned.note === null
-					? []
-					: [
-							...unsupportedTerms(cleaned.note, corpus),
-							...unsupportedControlWords(cleaned.note, corpus),
-						];
+			// Notes are checked twice over, in vetNote: a plan is not an observation, and
+			// a control the claim names either appears in what the browser returned or it
+			// does not. Both quoted names and bare control words are checked, because the
+			// model invented a control without quoting it and the quoted-only check let
+			// it past.
+			const vetted = vetNote(learned, evidence.join('\n'));
 
 			const record: StepRecord = {
 				step,
@@ -353,15 +494,9 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 				// Recorded so the transcript explains itself. Without this, reading
 				// run.jsonl cannot tell whether a note was never written, or written and
 				// then dropped, which is the first question when the guide looks thin.
-				noteKept: cleaned.note,
-				noteIssue:
-					cleaned.note === null && learned !== ''
-						? 'a plan, not an observation'
-						: unverified.length > 0
-							? `names ${unverified.join(', ')}, which the browser never returned`
-							: cleaned.trimmed
-								? 'plan trimmed off the end'
-								: null,
+				noteKept: vetted.text,
+				noteIssue: vetted.issue,
+				refused: null,
 				toolMs: call.ms,
 				llmMs: llm.stats.totalMs,
 				promptTokens: llm.stats.promptTokens,
@@ -372,19 +507,19 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 			};
 			artifacts.record(record);
 
-			if (cleaned.trimmed) {
+			if (vetted.trimmed) {
 				log.dim(
-					cleaned.note === null
+					vetted.text === null
 						? 'dropped a note that described a plan rather than an observation'
-						: `trimmed a plan off a note - kept: "${cleaned.note}"`,
+						: `trimmed a plan off a note - kept: "${vetted.text}"`,
 				);
 			}
-			if (unverified.length > 0) {
+			if (vetted.unverified.length > 0) {
 				log.dim(
-					`unverified note - ${unverified.map((term) => `"${term}"`).join(', ')} appears nowhere in what the browser returned`,
+					`unverified note - ${vetted.unverified.map((term) => `"${term}"`).join(', ')} appears nowhere in what the browser returned`,
 				);
 			}
-			if (cleaned.note !== null && unverified.length === 0) artifacts.addNote(cleaned.note);
+			if (vetted.usable && vetted.text !== null) artifacts.addNote(vetted.text);
 
 			if (usableFinding) artifacts.addFinding(usableFinding);
 
@@ -394,24 +529,23 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 			if (thought) log.dim(thought);
 			if (learned) {
 				const mark =
-					cleaned.note === null
+					vetted.text === null
 						? colour.yellow('  (a plan, not an observation - not kept)')
-						: unverified.length > 0
+						: vetted.unverified.length > 0
 							? colour.yellow('  (unverified, not kept)')
-							: cleaned.trimmed
-								? colour.dim(`  (kept: ${cleaned.note})`)
+							: vetted.trimmed
+								? colour.dim(`  (kept: ${vetted.text})`)
 								: '';
 				log.dim(`learned: ${learned}${mark}`);
 			}
 			if (usableFinding) log.info(`${colour.yellow(`finding [${usableFinding.severity}]`)} ${usableFinding.title}`);
 
-			// The observation for the next step is the result of this action, unless
-			// we need to re-read the page - so we snapshot lazily, only when the model
-			// asks for it, and otherwise feed back the raw result.
+			// The result of this action is what the next step sees. There is no second
+			// "observation" field kept alongside it: the two held the same string, so
+			// every step used to pay for its observation twice.
 			lastAction = `${tool}(${JSON.stringify(args)})`;
 			lastResult = truncate(call.text, MAX_RESULT_CHARS);
-			observed = lastResult;
-			observationLabel = `Result of ${tool}`;
+			lastResultLabel = `Result of ${tool}`;
 
 			if (tool === SNAPSHOT_TOOL && !call.isError) {
 				const text = call.text.trim();
@@ -421,14 +555,20 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 				unchangedSnapshots = 0;
 			}
 
+			// Corrections collect here instead of replacing the observation. All of them
+			// are harness text, and the model is promised that the wrapped block is page
+			// data; putting instructions inside it would make that promise a lie.
+			const notes: string[] = [];
+
 			if (unchangedSnapshots >= 1) {
 				log.dim('page unchanged since the last snapshot - pushing the model to act');
-				observed = [
-					'You have just read a page that has not changed since your previous snapshot, twice in a row.',
-					'A snapshot only reports what is already on screen, so another one cannot tell you anything new.',
-					'Your next action must change the state of the application: click an element ref from the snapshot above, type into a field, or navigate to a different URL.',
-				].join(' ');
-				observationLabel = 'Correction needed';
+				notes.push(
+					[
+						'You have just read a page that has not changed since your previous snapshot, twice in a row.',
+						'A snapshot only reports what is already on screen, so another one cannot tell you anything new.',
+						'Your next action must change the state of the application: click an element ref from the snapshot above, type into a field, or navigate to a different URL.',
+					].join(' '),
+				);
 			} else if (
 				// Tunnelling is the failure mode the prompt alone could not fix. A run asked
 				// to "widen after exploring deeply" spent all 14 of its steps on one page of
@@ -441,84 +581,77 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 			) {
 				nudgedForBreadth = true;
 				log.dim(`only ${artifacts.visitedCount} page(s) reached after ${step} steps - pushing the model to widen`);
-				observed = [
-					`You have taken ${step} steps and reached only ${artifacts.visitedCount} page(s) of this application.`,
-					'A report that covers one page tells a reader nothing about the rest of it.',
-					'Go back to the page you started from and open a part of the application you have not seen yet.',
-					'If this application genuinely has only one page, move to a different area or control of that page instead.',
-				].join(' ');
-				observationLabel = 'Correction needed';
+				notes.push(
+					[
+						`You have taken ${step} steps and reached only ${artifacts.visitedCount} page(s) of this application.`,
+						'A report that covers one page tells a reader nothing about the rest of it.',
+						'Go back to the page you started from and open a part of the application you have not seen yet.',
+						'If this application genuinely has only one page, move to a different area or control of that page instead.',
+					].join(' '),
+				);
 			}
 
-			// Applied last so the tab list survives whichever correction above ran. The
-			// destination of a new tab is not itself a page of the application, so it is
-			// deliberately not added to the coverage list.
+			// The destination of a new tab is not itself a page of the application, so it
+			// is deliberately not added to the coverage list.
 			const tabs = describeOtherTabs(call.text);
-			if (tabs !== null) {
-				observed = `${tabs}\n\n${observed}`;
-				observationLabel = `${observationLabel} (a new tab was opened)`;
-			}
+			if (tabs !== null) notes.push(tabs);
 
 			if (call.isError) {
-				observed = [
-					'The tool call you just made failed.',
-					'That is a problem with your instruction or with the machine, not a defect in the application under test, so it is never a finding.',
-					'Do not report it as one. Work out what was wrong with the action and try a different one.',
-					'',
-					observed,
-				].join('\n');
-				observationLabel = 'Correction needed (your action failed)';
+				notes.push(
+					[
+						'The tool call you just made failed.',
+						'That is a problem with your instruction or with the machine, not a defect in the application under test, so it is never a finding.',
+						'Do not report it as one. Work out what was wrong with the action and try a different one.',
+					].join('\n'),
+				);
 			}
 
-			if (cleaned.note === null && learned !== '') {
-				observed = [
-					`You wrote this in "learned": ${learned}`,
-					'That describes what you are about to do rather than what you observed.',
-					'"learned" is the only source for the application guide, so a plan in this field is something a reader has to skip past.',
-					'Put your next action in "thought", where it belongs, and put what the application does in "learned".',
-					'',
-					observed,
-				].join('\n');
-				observationLabel = 'Correction needed (a plan, not an observation)';
+			if (vetted.text === null && learned !== '') {
+				notes.push(
+					[
+						`You wrote this in "learned": ${learned}`,
+						'That describes what you are about to do rather than what you observed.',
+						'"learned" is the only source for the application guide, so a plan in this field is something a reader has to skip past.',
+						'Put your next action in "thought", where it belongs, and put what the application does in "learned".',
+					].join('\n'),
+				);
 			}
 
-			if (unverified.length > 0) {
-				observed = [
-					`You wrote this in "learned": ${learned}`,
-					`It names ${unverified.map((term) => `"${term}"`).join(', ')}, which does not appear anywhere in what the browser has returned to you this run.`,
-					'You therefore did not observe it. "learned" is the source of the application guide, so a guess in this field becomes a false statement in a document someone else will rely on.',
-					'Write only what a tool result showed you, and never name an element you have not seen in the snapshot.',
-					'',
-					observed,
-				].join('\n');
-				observationLabel = 'Correction needed (unverified claim)';
+			if (vetted.unverified.length > 0) {
+				notes.push(
+					[
+						`You wrote this in "learned": ${learned}`,
+						`It names ${vetted.unverified.map((term) => `"${term}"`).join(', ')}, which does not appear anywhere in what the browser has returned to you this run.`,
+						'You therefore did not observe it. "learned" is the source of the application guide, so a guess in this field becomes a false statement in a document someone else will rely on.',
+						'Write only what a tool result showed you, and never name an element you have not seen in the snapshot.',
+					].join('\n'),
+				);
 			}
 
-			// Wandering off the application. Prompt rules have not been enough here either:
-			// a run followed a link into the vendor's own site and spent the rest of its
-			// budget exploring that instead, while reporting it as if it were the app.
+			// Wandering off the application. The guard above refuses a navigation or a
+			// click the snapshot said would leave; this catches the ways that are left,
+			// such as a ref whose destination the snapshot never printed.
 			if (
 				currentUrl !== null &&
 				!isErrorPage(currentUrl) &&
 				!isApplicationUrl(currentUrl, config.startUrl)
 			) {
 				log.dim(`off the application under test: ${currentUrl} - pushing the model back`);
-				observed = [
-					`You are now at ${currentUrl}, which is not part of the application under test (${config.startUrl}).`,
-					'A link led you out of it. What you find here is not about this application, so it does not belong in the findings or the guide.',
-					'Note that the link works, go back, and continue exploring the application itself.',
-					'',
-					observed,
-				].join('\n');
-				observationLabel = 'Correction needed (you left the application)';
+				notes.push(
+					[
+						`You are now at ${currentUrl}, which is not part of the application under test (${config.startUrl}).`,
+						'A link led you out of it. What you find here is not about this application, so it does not belong in the findings or the guide.',
+						'Note that the link works, go back, and continue exploring the application itself.',
+					].join('\n'),
+				);
 			}
+
+			// Newest last, so reversed here: the checks that matter most - leaving the
+			// application, a claim nothing supports - stay at the top where they were.
+			correction = notes.length > 0 ? [...notes].reverse().join('\n\n') : null;
 		}
 
-		const written = artifacts.finalise([
-			`model calls: ${generation}`,
-			`stop reason: ${stopReason}`,
-			`distinct pages reached: ${artifacts.visitedCount}`,
-		]);
+		const written = writeArtefacts();
 
 		log.head('Run complete');
 		log.info(
@@ -527,7 +660,7 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 		log.info(
 			`model ${Math.round(totals.llmMs / 1000)}s (${totals.promptTokens} prompt / ${totals.outputTokens} output tokens)  tools ${Math.round(totals.toolMs / 1000)}s`,
 		);
-		for (const file of written) log.info(`  ${config.runDir}\\${file}`);
+		for (const file of written) log.info(`  ${path.join(config.runDir, file)}`);
 
 		return {
 			runDir: config.runDir,
@@ -541,6 +674,20 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 			toolMs: totals.toolMs,
 			stopReason,
 		};
+	} catch (error) {
+		// The run is over either way, so what it produced is written before the error
+		// carries on to the caller. The README promises that artefacts survive a failed
+		// run; this is the line that makes that true.
+		stopReason = 'error';
+		if (!artefactsWritten) {
+			const written = writeArtefacts();
+			log.head('Run stopped early');
+			log.info(
+				`steps ${artifacts.stepCount}  pages ${artifacts.visitedCount}  findings ${artifacts.findingCount}  notes ${artifacts.noteList().length}  stop: ${stopReason}`,
+			);
+			for (const file of written) log.info(`  ${path.join(config.runDir, file)}`);
+		}
+		throw error;
 	} finally {
 		await session.close();
 	}

@@ -63,7 +63,13 @@ and pushes the model to widen when that count stays low.
 
 ## One thing that postdates this run
 
-Coverage now appears as its own section in `findings.md`, on every run rather than
-only on runs that found nothing. This run was captured before that change, so its
-`findings.md` does not show the section; `npm test` covers what the current renderer
-produces.
+Two changes are newer than the run committed here, so its own files do not show
+them:
+
+- Coverage now appears as its own section in `findings.md`, on every run rather than
+  only on runs that found nothing, so this `findings.md` does not have it.
+- `run.jsonl` gained `noteKept` and `noteIssue`, the two fields that let a transcript
+  explain why a note was trimmed or dropped. A transcript from before them - this one
+  - records what the model said and nothing about what happened to it.
+
+`npm test` covers what the current renderer and recorder produce.
