@@ -67,7 +67,7 @@ and pushes the model to widen when that count stays low.
 
 ## One thing that postdates this run
 
-Three changes are newer than the run committed here, so its own files do not show
+Four changes are newer than the run committed here, so its own files do not show
 them:
 
 - Coverage now appears as its own section in `findings.md`, on every run rather than
@@ -80,5 +80,10 @@ them:
   from inside the run ("the current page contains...") is dropped. Five of the eight
   lines in this run's `app-guide.md` are restatements of one claim about the context
   menu, and the current code would keep one of them.
+- Two guards in the loop are newer than this run as well: a repeat click on a select
+  box is refused, and a widening nudge that goes unanswered for three steps is
+  carried out by the loop itself. Neither would have changed much here - this run
+  never touched a select box, and it did travel to a second page - but they are two
+  more reasons the numbers would differ if it were run today.
 
 `npm test` covers what the current renderer and recorder produce.

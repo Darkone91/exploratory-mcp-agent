@@ -52,16 +52,19 @@ accepted it twice.
   and the options never appear in a snapshot, because a native `<select>` does not
   render its options into the page until the browser opens them. The prompt says in
   plain words to use `browser_select_option` for a select box and that repeating the
-  click will loop forever. It is the one prompt rule in the README's list that the
-  harness has *not* taken over yet, and this run is what that costs: a quarter of the
-  budget, spent to learn that the sort dropdown has four options - which
-  `browser_find` had already told it at step 8.
+  click will loop forever. This run is what that cost before the harness took the rule
+  over: a quarter of the budget, spent to learn that the sort dropdown has four
+  options - which `browser_find` had already told it at step 8. The loop refuses the
+  second click on a select box now, so a run made today would lose one step to this
+  instead of four.
 - **Two pages of the application.** Login, inventory. No product, no cart, no
   sorting, no checkout. The coverage section says so, which is the point of the
   coverage section.
 - **The widening nudge changed nothing.** It fired at step 4 ("only 1 page(s) reached
   after 4 steps") and the run still ended on two pages. Four runs against the older
-  example's target did the same thing, each ending on two pages of twelve.
+  example's target did the same thing, each ending on two pages of twelve. Since this
+  run, three steps of that is all the nudge gets: the loop then navigates back to the
+  start page itself, and records the step as `overridden`.
 - **The guide is thinner than the run.** Seven notes for fourteen steps, four of them
   about the existence of the login form. That is honest, and it is not a guide anyone
   would use to understand this application.

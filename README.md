@@ -160,11 +160,11 @@ lesson, which took me most of a day to accept:
 
 > Prompt rules have failed here, measurably, over and over: use absolute URLs, use
 > `browser_select_option` for dropdowns, widen your exploration after a while, write
-> observations rather than plans. Most of them ended up enforced in code instead.
-> `browser_select_option` is the one that has not been, and `examples/saucedemo`
-> shows the bill for that: three clicks on a native select, and a quarter of the
-> budget gone. A prompt is how you explain intent to a model; it is not how you make
-> it behave.
+> observations rather than plans. Every one of them ended up enforced in code
+> instead, and the last one to get there was the dropdown rule - it took a run that
+> clicked a native select three times and spent a quarter of its budget learning what
+> `browser_find` had already told it. A prompt is how you explain intent to a model;
+> it is not how you make it behave.
 
 **A shortlist of real element refs.** Left alone, the model hunts for a target in
 a wall of snapshot text and often names a ref that does not exist. Playwright
@@ -201,9 +201,17 @@ back and open something else.
 
 The nudge reads better than it works. Since then every run I have watched - four
 against the same target as the example that motivated it, and two against a practice
-shop - has fired it, and not one of them got past three pages. It is a paragraph of
-prompt, and this file has spent its whole length saying what paragraphs of prompt are
-worth. Moving it into code is the first thing on the list at the end of this file.
+shop - has fired it, and not one of them got past three pages. So it no longer only
+asks: three steps after the nudge, if the run has still not reached a new page, the
+loop goes back to the start page itself and says so. The transcript records that step
+as `overridden`, with the tool call the model had wanted instead.
+
+That is the only place the harness drives the browser rather than refusing something
+the model asked for, and it is a judgement call rather than a rule: the start page is
+the one URL the loop knows is a hub, and going back to it is what a tester who had
+lost the thread would do. It also throws away wherever the model had got to, which is
+the point - a step spent on the fifth read of the same page is worth less than a step
+spent anywhere else.
 
 **It is shown the tab list.** The sharpest failure in this project's history is a
 false positive the agent reported at high severity, twice: *"Link to Elemental
@@ -338,6 +346,16 @@ observation they used to be prepended to, so the wrapper is not lying about what
 holds. `npm run check:prompt` holds that boundary, including the shortest version of
 the attack it exists to survive.
 
+**A repeat click on a select box is refused.** The prompt has said since the first
+version that a native `<select>` is operated with `browser_select_option` and that
+clicking one loops forever. A run clicked the same combobox three times anyway, and
+`browser_find` had already told it what the four options were. What is refused now is
+the *repeat*: the second click on a ref whose role is a select box, while the page's
+actionable elements are unchanged from the moment of the first. The first click is
+let through on purpose, because a custom dropdown built from divs carries the same
+role and for that one the click does something - the options appear in the tree, the
+picture changes, and the repeat is allowed.
+
 Plus the quieter ones: a curated tool surface, notes rather than the full
 transcript, findings deduplicated by content, and artefacts written even when the
 run dies partway through.
@@ -431,14 +449,13 @@ change by accident.
 
 ## What is not built yet
 
-- **Enforce what the nudges only ask for.** Two of them have now been measured
-  failing rather than suspected: the widening nudge (five runs, five times ignored;
-  every one of them ended on two pages) and the rule about using
-  `browser_select_option` on a select box (`examples/saucedemo` spends three steps on
-  it, and the options never appear). Both belong in the loop, in the same shape as the
-  console budget and the navigation guard: refuse the action, and say why. The second
-  is the smaller of the two - the shortlist already knows which ref is a combobox - and
-  the first is the one that would change what a run is able to find.
+- **The console counter is a finding generator.** The snapshot header prints
+  `Console: 5 errors` for free, and `examples/saucedemo` reports both of its findings
+  from that line without ever calling `browser_console_messages` - so neither finding
+  can say what broke. Every rule about the console assumes a step is spent reading it,
+  and a number that arrives for nothing cannot be regulated that way. Either the
+  counter comes out of the observation the model sees, or a finding about the console
+  has to be dropped unless the console was actually read.
 - **The note trimmer matches patterns, it does not understand.** It knows the
   phrasings this model has actually used, and a new way of narrating the same plan
   will get through. `npm run check:notes` holds nine real sentences from the

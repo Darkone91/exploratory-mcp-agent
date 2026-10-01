@@ -57,6 +57,32 @@ function roleOf(label: string): string {
 	return ROLE_PATTERN.exec(label.trim())?.[1] ?? '';
 }
 
+/**
+ * The role of an element the shortlist is offering, e.g. "combobox".
+ *
+ * Exported because the loop makes one decision from it: a click on a select box is
+ * not how a select box is operated, and the harness refuses the second one.
+ */
+export function actionRole(action: SnapshotAction): string {
+	return roleOf(action.label);
+}
+
+/** Roles that a native `<select>` element carries, which `browser_select_option` operates. */
+const SELECT_ROLES = new Set(['combobox', 'listbox']);
+
+/**
+ * Whether this element is a select box.
+ *
+ * A custom dropdown built from divs carries `combobox` too, so this is a hint rather
+ * than a fact - which is why the loop only refuses a *repeat* click on one, once the
+ * page has been shown not to change. For a real `<select>` the options never enter
+ * the page, so the repeat cannot ever learn anything; for a custom one they do, and
+ * the repeat is allowed.
+ */
+export function isSelectBox(action: SnapshotAction | undefined): boolean {
+	return action !== undefined && SELECT_ROLES.has(actionRole(action));
+}
+
 /** Strip list markers and collapse whitespace so labels read cleanly in a prompt. */
 function cleanLabel(text: string): string {
 	return text.replace(/^[\s\-*]+/, '').replace(/\s+/g, ' ').trim();

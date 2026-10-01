@@ -35,6 +35,7 @@ function step(overrides: Partial<StepRecord>): StepRecord {
 		noteKept: null,
 		noteIssue: null,
 		refused: null,
+		overridden: null,
 		toolMs: 1,
 		llmMs: 1,
 		promptTokens: 1,

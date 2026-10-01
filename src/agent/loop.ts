@@ -23,7 +23,7 @@ import {
 } from './navigation.js';
 import { cleanNote } from './notes.js';
 import { buildStepPrompt, buildSystemPrompt, PROMPT_VERSION, type AgentDecision } from './prompts.js';
-import { extractActions, type SnapshotAction } from './snapshot.js';
+import { extractActions, isSelectBox, type SnapshotAction } from './snapshot.js';
 
 /** Tool output budget, so one verbose console dump cannot swallow the prompt. */
 const MAX_RESULT_CHARS = 2000;
@@ -57,8 +57,21 @@ function truncate(text: string, max: number): string {
 	return `${clean.slice(0, max)}\n\n[...truncated ${clean.length - max} characters of tool output.]`;
 }
 
-/** Playwright MCP prefixes snapshots with the page URL and title when it has them. */
-function parsePageInfo(snapshot: string): { url: string | null } {
+/**
+ * A cheap picture of what a page offers, for noticing that nothing has changed.
+ *
+ * Labels rather than refs: Playwright renumbers refs between snapshots, so two views
+ * of an identical page would otherwise look different. Bracketed markers come out
+ * too, because a click adds `[active]` to whatever it focused - a change in the
+ * markup that says nothing about what the page offers.
+ */
+function actionPicture(actions: SnapshotAction[]): string {
+	return actions
+		.map((action) => action.label.replace(/\[[^\]]*\]/g, ' ').replace(/\s+/g, ' ').trim())
+		.join(' | ');
+}
+
+/** Playwright MCP prefixes snapshots with the page URL and title when it has them. */function parsePageInfo(snapshot: string): { url: string | null } {
 	const match = /^-\s*Page URL:\s*(\S+)/m.exec(snapshot);
 	return { url: match?.[1] ?? null };
 }
@@ -236,6 +249,17 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 		 */
 		let correction: string | null = null;
 		let nudgedForBreadth = false;
+		/** Where the run stood when the widening nudge was issued, so it can be enforced. */
+		let stepAtNudge = 0;
+		let pagesAtNudge = 0;
+		/**
+		 * A click that has already been shown to change nothing, keyed by ref.
+		 *
+		 * Holds a picture of the page's actionable elements at the moment of the click. A
+		 * second click on the same ref while that picture is unchanged cannot do anything
+		 * the first one did not.
+		 */
+		const clickedWithState = new Map<string, string>();
 		// Updated whenever a tool result carries a page URL, so entries in the
 		// transcript say where they happened rather than where we started.
 		let currentUrl: string | null = parsePageInfo(opening.text).url;
@@ -276,6 +300,7 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 				noteKept: null,
 				noteIssue: null,
 				refused: refusal.reason,
+				overridden: null,
 				toolMs: 0,
 				llmMs: model.stats.totalMs,
 				promptTokens: model.stats.promptTokens,
@@ -379,6 +404,7 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 					noteKept: closing.text,
 					noteIssue: closed.issue,
 					refused: null,
+					overridden: null,
 					toolMs: 0,
 					llmMs: llm.stats.totalMs,
 					promptTokens: llm.stats.promptTokens,
@@ -427,12 +453,81 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 				}
 			}
 
+			// The widening nudge is a paragraph of prompt, and every run watched so far has
+			// ignored it: five of them against one target, every one ending on two pages.
+			// So after three more steps without reaching a new page, the loop takes the
+			// step itself. This is the only place the harness drives the browser rather
+			// than refusing what the model asked for, and it is here because a report that
+			// covers one page of twelve is not a report - the tool's own example spent
+			// eleven of its fourteen steps on one page and then announced it was done.
+			if (
+				nudgedForBreadth &&
+				step - stepAtNudge >= 3 &&
+				artifacts.visitedCount <= pagesAtNudge &&
+				currentUrl !== null &&
+				!isErrorPage(currentUrl) &&
+				currentUrl !== config.startUrl
+			) {
+				const ignored = step - stepAtNudge;
+				log.step(
+					step,
+					config.maxSteps,
+					`${colour.yellow('harness')} going back to the start page - the nudge was ignored for ${ignored} steps`,
+				);
+				const moved = await session.call('browser_navigate', { url: config.startUrl });
+				totals.toolMs += moved.ms;
+				evidence.push(moved.text);
+				actions = extractActions(moved.text);
+				const movedInfo = parsePageInfo(moved.text);
+				if (movedInfo.url) currentUrl = movedInfo.url;
+				if (currentUrl !== null && !isErrorPage(currentUrl) && isApplicationUrl(currentUrl, config.startUrl)) {
+					artifacts.addVisitedUrl(currentUrl);
+				}
+				lastAction = `browser_navigate(${JSON.stringify({ url: config.startUrl })})`;
+				lastResult = truncate(moved.text, MAX_RESULT_CHARS);
+				lastResultLabel = 'Result of browser_navigate';
+				correction = [
+					`The harness moved you back to ${config.startUrl} itself, because you were told ${ignored} steps ago that this run had reached only ${artifacts.visitedCount} page(s) of the application and it still has.`,
+					'A report that covers one page tells a reader nothing about the rest of it, and the step you were about to take would have been spent on the same page again.',
+					'Open something you have not seen: the start page is above, with every ref on it. Pick one you have not used yet.',
+				].join(' ');
+				artifacts.record({
+					step,
+					at: new Date().toISOString(),
+					url: currentUrl,
+					thought: thought || null,
+					tool: 'browser_navigate',
+					args: { url: config.startUrl },
+					learned: null,
+					finding: null,
+					noteKept: null,
+					noteIssue: null,
+					refused: null,
+					overridden: `the widening nudge was ignored for ${ignored} steps, so the harness took the step instead of ${tool}(${JSON.stringify(args)})`,
+					toolMs: moved.ms,
+					llmMs: llm.stats.totalMs,
+					promptTokens: llm.stats.promptTokens,
+					outputTokens: llm.stats.outputTokens,
+					resultPreview: truncate(moved.text, 400),
+					isError: moved.isError,
+					actions: actions.map((action) => action.label),
+				});
+				stepAtNudge = step;
+				pagesAtNudge = artifacts.visitedCount;
+				unchangedSnapshots = 0;
+				lastSnapshotText = '';
+				continue;
+			}
+
 			// Where the browser is allowed to go, enforced rather than requested. The
 			// loop used to wait until the model had already arrived somewhere else and
 			// then spend a paragraph asking it to come back, and one request is all a
 			// page needs to aim the agent at a machine that is not on the internet. A
 			// click navigates just as surely as browser_navigate does, so the ref's
 			// destination is checked with it.
+			// What the model is looking at, before it acts. The select-box guard compares a
+			// repeat click against this.
+			const picture = actionPicture(actions);
 			const clickedRef =
 				tool === 'browser_click' && typeof args.target === 'string'
 					? actions.find((action) => action.ref === args.target)
@@ -467,6 +562,30 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 				continue;
 			}
 
+			// A select box is not operated by clicking it, and the prompt saying so has not
+			// been enough: one run clicked the same combobox three times and spent a quarter
+			// of its budget learning what browser_find had already told it. What is refused
+			// is the *repeat*, not the first click, because a custom dropdown built from
+			// divs carries the same role and for that one the click does something - which
+			// shows up as the page's elements changing, and this test is what notices.
+			if (
+				clickedRef !== undefined &&
+				isSelectBox(clickedRef) &&
+				clickedWithState.get(clickedRef.ref) === actionPicture(actions)
+			) {
+				log.step(step, config.maxSteps, `${colour.yellow('refused')} a second click on ${clickedRef.ref}`);
+				lastAction = `(refused) ${tool}(${JSON.stringify(args)})`;
+				lastResult = null;
+				const message = [
+					`You have already clicked ${clickedRef.ref} (${clickedRef.label}) and the page's elements are exactly what they were then, so a second click cannot do anything the first one did not.`,
+					'A native select does not put its options into the page, so no snapshot will ever show them - which is why clicking one loops.',
+					`Use browser_select_option with target "${clickedRef.ref}", and browser_find on its label if you need the option values.`,
+				].join(' ');
+				correction = message;
+				recordRefusal(step, llm, { tool, args, thought, reason: message });
+				continue;
+			}
+
 			const call = await session.call(tool, args);
 			totals.toolMs += call.ms;
 			if (tool === CONSOLE_TOOL && currentUrl !== null) consoleChecked.add(currentUrl);
@@ -480,13 +599,24 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 			actions = extractActions(call.text);
 
 			const info = parsePageInfo(call.text);
-			if (info.url) currentUrl = info.url;
+			if (info.url && info.url !== currentUrl) {
+				// A different page: the same labels can belong to different elements there, so
+				// what has already been clicked does not carry over.
+				clickedWithState.clear();
+				currentUrl = info.url;
+			}
 			if (
 				currentUrl !== null &&
 				!isErrorPage(currentUrl) &&
 				isApplicationUrl(currentUrl, config.startUrl)
 			) {
 				artifacts.addVisitedUrl(currentUrl);
+			}
+
+			// Remembered for the select-box guard: what the page offered when this click was
+			// made, so a repeat can be recognised as a repeat.
+			if (tool === 'browser_click' && clickedRef !== undefined) {
+				clickedWithState.set(clickedRef.ref, picture);
 			}
 
 			// A tool call that failed is a mistake in the instruction, or the machine,
@@ -522,6 +652,7 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 				noteKept: vetted.text,
 				noteIssue,
 				refused: null,
+				overridden: null,
 				toolMs: call.ms,
 				llmMs: llm.stats.totalMs,
 				promptTokens: llm.stats.promptTokens,
@@ -607,6 +738,8 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 				step < config.maxSteps - 2
 			) {
 				nudgedForBreadth = true;
+				stepAtNudge = step;
+				pagesAtNudge = artifacts.visitedCount;
 				log.dim(`only ${artifacts.visitedCount} page(s) reached after ${step} steps - pushing the model to widen`);
 				notes.push(
 					[

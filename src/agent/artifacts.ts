@@ -50,6 +50,13 @@ export interface StepRecord {
 	 * transcript can say that four of them were refused.
 	 */
 	refused: string | null;
+	/**
+	 * Set when the harness took the step itself rather than doing what the model asked,
+	 * and the tool and args in this record describe what the harness did. This says
+	 * what the model wanted and why it was overruled. There is one case of it so far:
+	 * the widening nudge, ignored five steps running.
+	 */
+	overridden: string | null;
 	toolMs: number;
 	llmMs: number;
 	promptTokens: number;
