@@ -1,9 +1,13 @@
 # Example run
 
 The real, unedited output of one exploration of a practice shopping application,
-committed so the artefact can be read without installing anything. This is the
-newer of the two runs under `examples/`; the other one, against a deliberately
-buggy practice site, is older and says so about itself.
+committed so the artefact can be read without installing anything.
+
+There are three runs under `examples/`. This one is the middle of them: newer than
+[`the-internet`](../the-internet/), which says so about itself, and older than
+[`saucedemo-after`](../saucedemo-after/), which is this same application and model run
+again once the guards existed. Read the other two against this one - the difference
+between them is the most useful thing in this repository.
 
 | | |
 |---|---|

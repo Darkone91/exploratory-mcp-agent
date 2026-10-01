@@ -17,7 +17,11 @@ Two complete runs are committed under [`examples/`](examples/) - the real, unedi
 output of two explorations - if you would rather read what the agent produces before
 installing anything. One is against a deliberately buggy practice site, the other
 against a practice shopping app, and each README says what is wrong with its own run
-rather than leaving it to be discovered.
+rather than leaving it to be discovered. There is a third as well:
+[`examples/saucedemo-after`](examples/saucedemo-after/) is the same shopping app, model
+and budget run again after the guards existed. Read it beside its pair: same
+application, same fourteen steps, and the difference between the two is the shortest
+argument in this repository for putting rules in the harness.
 
 ## Why it exists
 
@@ -459,6 +463,7 @@ examples/
   the-internet/            one complete run, kept so the output can be read
                            without running anything
   saucedemo/               a second one, against a practice shopping app
+  saucedemo-after/         the same run again once the guards existed
 ```
 
 ## Checks
