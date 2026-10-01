@@ -1,5 +1,7 @@
 # exploratory-mcp-agent
 
+[![checks](https://github.com/Darkone91/exploratory-mcp-agent/actions/workflows/test.yml/badge.svg)](https://github.com/Darkone91/exploratory-mcp-agent/actions/workflows/test.yml)
+
 An autonomous exploratory tester. Point it at a web application, and it works
 through it on its own — reading the page, deciding what is worth probing,
 poking at edge cases — and then writes up two things:
@@ -394,7 +396,10 @@ examples/
 
 `npm test` runs the typecheck and the small calibration checks below. They are not
 unit tests for their own sake - each one pins a decision that a run got wrong, so
-that a later change cannot quietly bring the failure back.
+that a later change cannot quietly bring the failure back. They run on every push
+and pull request in `.github/workflows/test.yml`, against Node 20, 22 and 24, which
+is only possible because none of them needs a browser, Ollama, or a nine-gigabyte
+model download to mean something.
 
 | Check | What it pins |
 |---|---|
@@ -449,3 +454,8 @@ change by accident.
   but "we never touched the search field" is not.
 - **Run-to-run diffing.** Two runs against the same app should highlight what
   changed, which is most of the value of running this on a schedule.
+
+## Licence
+
+MIT. Most of the value here is in the reasoning rather than the code, and reasoning
+is more useful when people are free to borrow it.

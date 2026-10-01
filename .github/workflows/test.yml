@@ -1,0 +1,39 @@
+# The calibration checks are pure functions - no browser, no Ollama, no model
+# download - so this is a real gate rather than a smoke test that needs a GPU to
+# mean anything. It runs on every push and every pull request.
+name: checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The engines field says >=20.12, so the floor is checked rather than
+        # assumed, and the two versions above it are checked because a harness like
+        # this is exactly the kind of thing that quietly depends on a runtime
+        # detail.
+        node: ['20.x', '22.x', '24.x']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      # ci rather than install: the lockfile is committed, and a check that runs
+      # against whatever npm felt like resolving is not a check.
+      - run: npm ci
+
+      - run: npm test
+
+      # The typecheck proves the modules agree with each other. This proves the
+      # entry point still starts, which is the one file nothing imports.
+      - name: the CLI still starts
+        run: npm run help
