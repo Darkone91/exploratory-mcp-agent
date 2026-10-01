@@ -286,6 +286,26 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 			});
 		};
 
+		/**
+		 * Put a note into the guide, and say why it did not go in when it did not.
+		 *
+		 * Two things can stop a note: it was never an observation, or it is one the run
+		 * already established in different words. The first was already reported by
+		 * vetNote; the second is decided here, because only the guide knows what it
+		 * holds.
+		 */
+		const keepNote = (vetted: VettedNote): { issue: string | null; duplicate: boolean } => {
+			const established =
+				vetted.usable && vetted.text !== null ? artifacts.addNote(vetted.text) : false;
+			const duplicate = vetted.text !== null && vetted.usable && !established;
+			return {
+				issue:
+					vetted.issue ??
+					(duplicate ? 'the same observation was already established in other words' : null),
+				duplicate,
+			};
+		};
+
 		for (let step = 1; step <= config.maxSteps; step += 1) {
 			// A correction belongs to the step that earned it, never to the next one.
 			correction = null;
@@ -336,10 +356,13 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 				// It is the part of app-guide.md a reader meets first, and it used to be
 				// the one note nothing looked at.
 				const closing = vetNote(learned, evidence.join('\n'));
-				if (closing.usable && closing.text !== null) artifacts.addNote(closing.text);
+				const closed = keepNote(closing);
 				if (finding !== null) artifacts.addFinding(finding);
 				if (closing.text !== null && !closing.usable) {
 					log.dim(`closing note not kept - ${closing.issue}`);
+				}
+				if (closed.duplicate) {
+					log.dim('closing note already established in other words');
 				}
 				// Recorded like any other step. Without this, the closing summary sat in
 				// app-guide.md and nowhere in the transcript, which is the one question
@@ -354,7 +377,7 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 					learned: learned || null,
 					finding,
 					noteKept: closing.text,
-					noteIssue: closing.issue,
+					noteIssue: closed.issue,
 					refused: null,
 					toolMs: 0,
 					llmMs: llm.stats.totalMs,
@@ -481,6 +504,8 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 			// model invented a control without quoting it and the quoted-only check let
 			// it past.
 			const vetted = vetNote(learned, evidence.join('\n'));
+			const kept = keepNote(vetted);
+			const noteIssue = kept.issue;
 
 			const record: StepRecord = {
 				step,
@@ -495,7 +520,7 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 				// run.jsonl cannot tell whether a note was never written, or written and
 				// then dropped, which is the first question when the guide looks thin.
 				noteKept: vetted.text,
-				noteIssue: vetted.issue,
+				noteIssue,
 				refused: null,
 				toolMs: call.ms,
 				llmMs: llm.stats.totalMs,
@@ -519,7 +544,9 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 					`unverified note - ${vetted.unverified.map((term) => `"${term}"`).join(', ')} appears nowhere in what the browser returned`,
 				);
 			}
-			if (vetted.usable && vetted.text !== null) artifacts.addNote(vetted.text);
+			if (kept.duplicate) {
+				log.dim('note already established in other words - the guide keeps the first wording');
+			}
 
 			if (usableFinding) artifacts.addFinding(usableFinding);
 

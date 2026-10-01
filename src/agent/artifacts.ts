@@ -82,6 +82,22 @@ const SEVERITY_RANK: Record<Severity, number> = { high: 0, medium: 1, low: 2 };
  */
 export const FINDING_DUPLICATE_THRESHOLD = 0.45;
 
+/**
+ * How alike two notes must be before they are treated as one observation.
+ *
+ * Higher than the finding threshold, and it has to be, because a note is one
+ * sentence: two sentences about the same control share most of their words even
+ * when they say the opposite. "The first checkbox is now checked after clicking
+ * it" and "The first checkbox is unchecked" score 0.67 - most of the words, and
+ * two different facts. Reworded restatements of one fact measured 0.83 and up, so
+ * the threshold sits between the two, and tools/check-notes.ts holds both groups.
+ *
+ * It is word overlap, not meaning. A note that contains every word of another and
+ * adds a number - "adds an element" and "adds two elements" - scores 1.00 and will
+ * be treated as a repeat.
+ */
+export const NOTE_DUPLICATE_THRESHOLD = 0.75;
+
 function normaliseSeverity(value: unknown): Severity {
 	const text = String(value ?? '').toLowerCase();
 	return SEVERITY_ORDER.includes(text as Severity) ? (text as Severity) : 'low';
@@ -112,17 +128,26 @@ const STOP_WORDS = new Set([
 ]);
 
 /**
- * The set of meaningful words in a finding. Used to decide whether two findings
- * describe the same problem.
+ * The set of meaningful words in a piece of text, used to decide whether two
+ * sentences describe the same thing. Findings and notes both go through this;
+ * they differ only in what they compare against and how alike is alike enough.
  */
-export function findingSignature(finding: Finding): Set<string> {
-	const text = `${finding.title} ${finding.detail ?? ''}`.toLowerCase();
+export function textSignature(text: string): Set<string> {
 	return new Set(
 		text
+			.toLowerCase()
 			.replace(/[^a-z0-9\s]+/g, ' ')
 			.split(/\s+/)
 			.filter((word) => word.length > 3 && !STOP_WORDS.has(word)),
 	);
+}
+
+/**
+ * The set of meaningful words in a finding. Used to decide whether two findings
+ * describe the same problem.
+ */
+export function findingSignature(finding: Finding): Set<string> {
+	return textSignature(`${finding.title} ${finding.detail ?? ''}`);
 }
 
 /**
@@ -131,7 +156,7 @@ export function findingSignature(finding: Finding): Set<string> {
  * Jaccard would be too blunt here, because one report of the same problem is
  * often much longer than another - the model elaborates on the repeat.
  */
-function similarity(a: Set<string>, b: Set<string>): number {
+export function similarity(a: Set<string>, b: Set<string>): number {
 	if (a.size === 0 || b.size === 0) return 0;
 	let shared = 0;
 	for (const word of a) if (b.has(word)) shared += 1;
@@ -141,7 +166,6 @@ function similarity(a: Set<string>, b: Set<string>): number {
 export class RunArtifacts {
 	private readonly steps: StepRecord[] = [];
 	private readonly notes: string[] = [];
-	private readonly noteKeys = new Set<string>();
 	private readonly findings: Finding[] = [];
 	private readonly visitedUrls: string[] = [];
 	private readonly jsonlPath: string;
@@ -164,18 +188,33 @@ export class RunArtifacts {
 		this.jsonlPath = path.join(dir, 'run.jsonl');
 	}
 
-	/** Notes are what the model has established; they seed the app guide. */
-	addNote(note: string): void {
+	/**
+	 * Add a note to what the run has established.
+	 *
+	 * Returns false when the note was already established in other words, so the
+	 * caller can record that in the transcript. A note that reads as kept in
+	 * run.jsonl and is missing from the guide is otherwise a mystery.
+	 */
+	addNote(note: string): boolean {
 		const clean = note.replace(/\s+/g, ' ').trim();
-		if (clean === '') return;
+		if (clean === '') return false;
 		// A model working one page for several steps restates the same observation every
 		// time. One run put this line into the guide six times: "The dropdown menu is
 		// currently selected with a disabled option 'Please select an option'." Six
 		// copies of a true sentence is still a worse document than one copy of it.
-		const key = clean.toLowerCase().replace(/[^a-z0-9 ]+/g, '');
-		if (this.noteKeys.has(key)) return;
-		this.noteKeys.add(key);
+		//
+		// Byte-identical repeats were the first version of this, and they are the easy
+		// half. The other half is the model restating one observation in different
+		// words, which is the same failure the findings list already had, so it is
+		// measured the same way - see NOTE_DUPLICATE_THRESHOLD for why the threshold is
+		// a different number.
+		const signature = textSignature(clean);
+		const duplicate = this.notes.some(
+			(existing) => similarity(signature, textSignature(existing)) >= NOTE_DUPLICATE_THRESHOLD,
+		);
+		if (duplicate) return false;
 		this.notes.push(clean);
+		return true;
 	}
 
 	addFinding(finding: Finding): void {

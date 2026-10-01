@@ -38,6 +38,14 @@ const INTENTION_MARKERS: RegExp[] = [
 	/\s+that\s+I\s+(?:will|am going to|am about to|need to|should|must|plan to)\b/i,
 	/\s+I\s+(?:will|am going to|am about to|need to|should|must|plan to|intend to)\b/i,
 	/\s+I(?:'ll|'m about to|'m going to)\b/i,
+	// The same intention written as a statement about the page. A run against a
+	// practice shopping site produced seven notes of this shape in fourteen steps -
+	// "The page state after typing the password needs to be observed", "The 'Add to
+	// cart' button ... needs to be clicked to observe its functionality" - and every
+	// one of them is the agent describing its own next move.
+	/\s+(?:and\s+(?:it|which|that)\s+)?needs?\s+(?:to\s+be|further)\b/i,
+	/\s+(?:and\s+)?a\s+snapshot\s+is\s+needed\b/i,
+	/\s+is\s+ready\s+for\b/i,
 ];
 
 /**
@@ -73,6 +81,18 @@ const MOVEMENT_NARRATION = /^(?:navigated|went|returned|moved|switched|refreshed
 const FIRST_PERSON = /\b(?:I|I'm|I'll|my)\b/;
 
 /**
+ * Notes written from inside the run rather than about the application.
+ *
+ * "The page state after typing the password needs to be observed" and "The current
+ * page contains two options" both read as facts about the page, and neither is one: a
+ * guide is read later by somebody who is not in the run, for whom "the current page"
+ * means nothing. A run against a practice shopping site produced seven notes of this
+ * shape in fourteen steps, which is the other half of why this file exists - the
+ * prompt asks for observations, and the model writes down its own situation.
+ */
+const ABOUT_THE_RUN = /^(?:the\s+)?(?:(?:current|active)\s+page|page\s+(?:state|content))\b/i;
+
+/**
  * Shorter than this and a trimmed fragment is not worth keeping - it reads as a
  * sentence that was cut off, which is worse than no note.
  */
@@ -86,6 +106,7 @@ export function cleanNote(claim: string): CleanedNote {
 	const isAboutTheAgent = PURPOSE_CLAUSE.test(text) || FIRST_PERSON.test(text);
 	if (opensWithAnAction && isAboutTheAgent) return { note: null, trimmed: true };
 	if (MOVEMENT_NARRATION.test(text)) return { note: null, trimmed: true };
+	if (ABOUT_THE_RUN.test(text)) return { note: null, trimmed: true };
 
 	let cut = text.length;
 	for (const marker of INTENTION_MARKERS) {

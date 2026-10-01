@@ -13,9 +13,11 @@ Both come out of the same run, because they are the same knowledge. An agent tha
 has just spent a run working out what an application does is the wrong thing to
 throw away.
 
-A complete run is committed under [`examples/`](examples/) - the real, unedited
-output of one exploration - if you would rather read what the agent produces before
-installing anything.
+Two complete runs are committed under [`examples/`](examples/) - the real, unedited
+output of two explorations - if you would rather read what the agent produces before
+installing anything. One is against a deliberately buggy practice site, the other
+against a practice shopping app, and each README says what is wrong with its own run
+rather than leaving it to be discovered.
 
 ## Why it exists
 
@@ -158,9 +160,11 @@ lesson, which took me most of a day to accept:
 
 > Prompt rules have failed here, measurably, over and over: use absolute URLs, use
 > `browser_select_option` for dropdowns, widen your exploration after a while, write
-> observations rather than plans. Every one of them ended up enforced in code
-> instead. A prompt is how you explain intent to a model; it is not how you make it
-> behave.
+> observations rather than plans. Most of them ended up enforced in code instead.
+> `browser_select_option` is the one that has not been, and `examples/saucedemo`
+> shows the bill for that: three clicks on a native select, and a quarter of the
+> budget gone. A prompt is how you explain intent to a model; it is not how you make
+> it behave.
 
 **A shortlist of real element refs.** Left alone, the model hunts for a target in
 a wall of snapshot text and often names a ref that does not exist. Playwright
@@ -194,6 +198,12 @@ of a twelve-page application, then declared itself finished. The prompt asked it
 widen after exploring deeply and it did not, so the loop counts the distinct pages
 reached and, if that number is still one after five steps, tells it plainly to go
 back and open something else.
+
+The nudge reads better than it works. Since then every run I have watched - four
+against the same target as the example that motivated it, and two against a practice
+shop - has fired it, and not one of them got past three pages. It is a paragraph of
+prompt, and this file has spent its whole length saying what paragraphs of prompt are
+worth. Moving it into code is the first thing on the list at the end of this file.
 
 **It is shown the tab list.** The sharpest failure in this project's history is a
 false positive the agent reported at high severity, twice: *"Link to Elemental
@@ -390,6 +400,7 @@ tools/
 examples/
   the-internet/            one complete run, kept so the output can be read
                            without running anything
+  saucedemo/               a second one, against a practice shopping app
 ```
 
 ## Checks
@@ -420,6 +431,14 @@ change by accident.
 
 ## What is not built yet
 
+- **Enforce what the nudges only ask for.** Two of them have now been measured
+  failing rather than suspected: the widening nudge (five runs, five times ignored;
+  every one of them ended on two pages) and the rule about using
+  `browser_select_option` on a select box (`examples/saucedemo` spends three steps on
+  it, and the options never appear). Both belong in the loop, in the same shape as the
+  console budget and the navigation guard: refuse the action, and say why. The second
+  is the smaller of the two - the shortlist already knows which ref is a combobox - and
+  the first is the one that would change what a run is able to find.
 - **The note trimmer matches patterns, it does not understand.** It knows the
   phrasings this model has actually used, and a new way of narrating the same plan
   will get through. `npm run check:notes` holds nine real sentences from the

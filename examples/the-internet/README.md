@@ -3,6 +3,10 @@
 The real, unedited output of one exploration, committed so you can read what the
 agent produces without installing Ollama, Playwright and a 9 GB model first.
 
+This is the older of the two runs under `examples/`. `examples/saucedemo` is newer,
+and was produced by the code as it stands; this one was not, and the last section
+below is the list of changes that postdate it.
+
 | | |
 |---|---|
 | Target | `https://the-internet.herokuapp.com/` — a public site of deliberately buggy practice pages |
@@ -63,13 +67,18 @@ and pushes the model to widen when that count stays low.
 
 ## One thing that postdates this run
 
-Two changes are newer than the run committed here, so its own files do not show
+Three changes are newer than the run committed here, so its own files do not show
 them:
 
 - Coverage now appears as its own section in `findings.md`, on every run rather than
   only on runs that found nothing, so this `findings.md` does not have it.
-- `run.jsonl` gained `noteKept` and `noteIssue`, the two fields that let a transcript
-  explain why a note was trimmed or dropped. A transcript from before them - this one
-  - records what the model said and nothing about what happened to it.
+- `run.jsonl` gained `noteKept`, `noteIssue` and `refused`, the fields that let a
+  transcript explain why a note was trimmed, dropped, or never a note to begin with -
+  and why a step produced nothing. A transcript from before them, like this one,
+  records what the model said and nothing about what happened to it.
+- Notes are de-duplicated by content rather than by exact match, and a note written
+  from inside the run ("the current page contains...") is dropped. Five of the eight
+  lines in this run's `app-guide.md` are restatements of one claim about the context
+  menu, and the current code would keep one of them.
 
 `npm test` covers what the current renderer and recorder produce.

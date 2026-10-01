@@ -142,6 +142,40 @@ try {
 	} finally {
 		rmSync(deadDir, { recursive: true, force: true });
 	}
+
+	// --- one observation, three wordings -------------------------------------------
+	// The guide is built from notes, and a model working one page restates itself. The
+	// exact-match version of this only caught the repetitions that were identical to the
+	// character, which is the easy half; the threshold that decides the rest is measured
+	// in check-notes.ts, and what is pinned here is that addNote reports the decision, so
+	// the transcript can record it.
+	const noteDir = mkdtempSync(path.join(tmpdir(), 'artefacts-notes-'));
+	try {
+		const notes = new RunArtifacts(noteDir, {
+			url: 'https://example.com/',
+			model: 'test-model',
+			startedAt: '2026-01-01T00:00:00.000Z',
+			promptVersion: 'test-v1',
+		});
+		check(
+			'a note goes in the first time',
+			notes.addNote('The first checkbox is now checked after clicking it.'),
+		);
+		check(
+			'the same note in the same words is refused',
+			!notes.addNote('The first checkbox is now checked after clicking it.'),
+		);
+		check(
+			'the same observation in other words is refused too',
+			!notes.addNote('The first checkbox is checked after it is clicked.'),
+		);
+		check(
+			'a different observation on the same control is kept',
+			notes.addNote('The second checkbox is now unchecked after clicking it.'),
+		);
+	} finally {
+		rmSync(noteDir, { recursive: true, force: true });
+	}
 } finally {
 	rmSync(dir, { recursive: true, force: true });
 }

@@ -1,0 +1,14 @@
+{
+  "url": "https://www.saucedemo.com/",
+  "model": "qwen2.5:14b",
+  "startedAt": "2026-10-01T13:27:49.736Z",
+  "promptVersion": "explore-v4",
+  "steps": 14,
+  "findings": 2,
+  "notes": 7,
+  "lines": [
+    "model calls: 14",
+    "stop reason: step-limit",
+    "distinct pages reached: 2"
+  ]
+}
