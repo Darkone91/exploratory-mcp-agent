@@ -56,18 +56,28 @@ Read "Path taken" and you can watch the agent struggle. Steps 8 and 11 are marke
 **failed**: it asked to click refs `e2` and `e12`, which never existed. It had just
 navigated, Playwright returned the snapshot as a file link rather than inline, so the
 shortlist was empty and the model filled the gap by inventing refs - precisely what
-the prompt tells it not to do.
+the prompt tells it not to do, and the cost was two of fourteen steps.
+
+That is fixed now, and this run is the reason the fix has the shape it does. A ref the
+page never offered is refused before it is used, with the list of refs that would work
+and an instruction to take a snapshot. It is not the same fix as refusing an empty
+shortlist outright, because of something a later run showed: `browser_type` returns no
+page at all, so an eager version of this guard wiped the refs between the username and
+the password and refused the second keystroke. Refs now survive a fill and die at a
+navigation.
 
 Seven of the thirteen steps went into one page, and it reached 2 pages of a
 twelve-page application. That is poor coverage, and the report says so rather than
 implying otherwise.
 
 Both are next on the list. The second is why the loop counts distinct pages reached
-and pushes the model to widen when that count stays low.
+and pushes the model to widen when that count stays low - and that push, being a
+paragraph of prompt, was ignored by six runs in a row, so three steps of silence now
+means the loop goes back to the start page itself.
 
 ## One thing that postdates this run
 
-Four changes are newer than the run committed here, so its own files do not show
+Several changes are newer than the run committed here, so its own files do not show
 them:
 
 - Coverage now appears as its own section in `findings.md`, on every run rather than
@@ -85,5 +95,9 @@ them:
   carried out by the loop itself. Neither would have changed much here - this run
   never touched a select box, and it did travel to a second page - but they are two
   more reasons the numbers would differ if it were run today.
+- A ref the page never offered is refused, which is this run's own two failed steps:
+  `e2` and `e12` would never have been sent to the browser. So would a run that stops
+  itself after five identical results, which this one did not reach, since its failures
+  at least produced different text each time.
 
 `npm test` covers what the current renderer and recorder produce.

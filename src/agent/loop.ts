@@ -23,11 +23,34 @@ import {
 } from './navigation.js';
 import { cleanNote } from './notes.js';
 import { buildStepPrompt, buildSystemPrompt, PROMPT_VERSION, type AgentDecision } from './prompts.js';
-import { extractActions, isSelectBox, type SnapshotAction } from './snapshot.js';
+import { extractActions, isSelectBox, unknownTarget, type SnapshotAction } from './snapshot.js';
 
 /** Tool output budget, so one verbose console dump cannot swallow the prompt. */
 const MAX_RESULT_CHARS = 2000;
 const SNAPSHOT_TOOL = 'browser_snapshot';
+/** How many refs the prompt offers the model. */
+const SHORTLIST_SIZE = 12;
+/**
+ * Cap when harvesting refs for the guard rather than the menu, so a page with
+ * thousands of links cannot make a step expensive. Well above SHORTLIST_SIZE on
+ * purpose: the menu is a shortlist, but the guard's question is whether the model
+ * named something the page actually offers, and an element outside the menu is a
+ * worse answer than a wrong one - it would refuse a link that is really there.
+ */
+const MAX_HARVESTED_ACTIONS = 300;
+/**
+ * How many consecutive steps may return a byte-identical result before the run gives
+ * up. A page that has not changed in five readings is not going to change, and the
+ * budget is better spent stopping honestly than on producing nothing.
+ */
+const STALL_LIMIT = 4;
+/** Tools whose argument is an element ref. */
+const TARGETED_TOOLS = new Set([
+	'browser_click',
+	'browser_type',
+	'browser_select_option',
+	'browser_generate_locator',
+]);
 /**
  * The console is cheap to read and almost never worth reading twice: the same
  * page reports the same errors. In one measured run the model spent 4 of 15
@@ -46,7 +69,7 @@ export interface ExploreOutcome {
 	outputTokens: number;
 	llmMs: number;
 	toolMs: number;
-	stopReason: 'model-finished' | 'step-limit' | 'error';
+	stopReason: 'model-finished' | 'step-limit' | 'stalled' | 'error';
 }
 
 function truncate(text: string, max: number): string {
@@ -260,6 +283,11 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 		 * the first one did not.
 		 */
 		const clickedWithState = new Map<string, string>();
+		/** Consecutive steps whose tool result was byte-identical to the one before. */
+		let stalledSteps = 0;
+		let lastResultText = '';
+		/** Consecutive steps the harness refused, which produce nothing either. */
+		let refusalStreak = 0;
 		// Updated whenever a tool result carries a page URL, so entries in the
 		// transcript say where they happened rather than where we started.
 		let currentUrl: string | null = parsePageInfo(opening.text).url;
@@ -271,6 +299,12 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 		let unchangedSnapshots = 0;
 		// Real element refs read off the most recent page view. Playwright returns a
 		// fresh snapshot after most actions, so this refreshes itself as we go.
+		//
+		// Two sets: `allActions` is everything actionable the page offered, which is
+		// what the guard checks a target against; `actions` is the shorter menu the
+		// prompt shows. They differ only in size, and that difference is the point -
+		// refusing the thirteenth link on a long page would be a false accusation.
+		let allActions: SnapshotAction[] = [];
 		let actions: SnapshotAction[] = [];
 		// Pages whose console has already been read this run.
 		const consoleChecked = new Set<string>();
@@ -282,12 +316,17 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 		 * spent. Leaving it out of the transcript made the numbers in a report
 		 * unexplainable: a run shows nine steps and four of them produced nothing, and
 		 * nothing on disk says why.
+		 *
+		 * Returns true when the refusals have gone on long enough to stop the run. A
+		 * refusal is a step that produced nothing, and four of them in a row means the
+		 * model is not reading the corrections - the same situation as a page that will
+		 * not change, and it deserves the same answer.
 		 */
 		const recordRefusal = (
 			stepNumber: number,
 			model: ChatResult,
 			refusal: { tool: string; args: Record<string, unknown>; thought: string; reason: string },
-		): void => {
+		): boolean => {
 			artifacts.record({
 				step: stepNumber,
 				at: new Date().toISOString(),
@@ -309,6 +348,15 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 				isError: false,
 				actions: [],
 			});
+			refusalStreak += 1;
+			if (refusalStreak >= STALL_LIMIT) {
+				stopReason = 'stalled';
+				log.dim(
+					`the harness refused ${refusalStreak} steps in a row - the corrections are not being read, so the run is stopping here`,
+				);
+				return true;
+			}
+			return false;
 		};
 
 		/**
@@ -429,7 +477,7 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 					.map((entry) => entry.name)
 					.join(', ')}.`;
 				correction = message;
-				recordRefusal(step, llm, { tool, args, thought, reason: message });
+				if (recordRefusal(step, llm, { tool, args, thought, reason: message })) break;
 				continue;
 			}
 
@@ -440,8 +488,26 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 				const message =
 					'You have already read the console on this page. It reports the same lines every time, so reading it again cannot teach you anything. Do something that changes the page: click an element ref from the snapshot, type into a field, or move to a different part of the application.';
 				correction = message;
-				recordRefusal(step, llm, { tool, args, thought, reason: message });
+				if (recordRefusal(step, llm, { tool, args, thought, reason: message })) break;
 				continue;
+			}
+
+			// The ref the model named has to be one the page actually offers. A tool that
+			// returns no snapshot - browser_type is the common one - leaves the shortlist
+			// empty, and a model with an empty shortlist does not ask for one; it reaches
+			// for a ref it remembers. One run did exactly that, clicked a generic container
+			// one digit away from the login button, and spent its last six steps looking at
+			// an unchanged page.
+			if (TARGETED_TOOLS.has(tool) && typeof args.target === 'string') {
+				const problem = unknownTarget(args.target, allActions);
+				if (problem !== null) {
+					log.step(step, config.maxSteps, `${colour.yellow('refused')} unknown ref ${args.target}`);
+					lastAction = `(refused) ${tool}(${JSON.stringify(args)})`;
+					lastResult = null;
+					correction = problem;
+					if (recordRefusal(step, llm, { tool, args, thought, reason: problem })) break;
+					continue;
+				}
 			}
 
 			if (tool === 'browser_navigate' && typeof args.url === 'string' && currentUrl !== null) {
@@ -558,7 +624,7 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 					'Note that the link exists if that is worth recording, then carry on exploring the application itself.',
 				].join(' ');
 				correction = message;
-				recordRefusal(step, llm, { tool, args, thought, reason: message });
+				if (recordRefusal(step, llm, { tool, args, thought, reason: message })) break;
 				continue;
 			}
 
@@ -582,26 +648,40 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 					`Use browser_select_option with target "${clickedRef.ref}", and browser_find on its label if you need the option values.`,
 				].join(' ');
 				correction = message;
-				recordRefusal(step, llm, { tool, args, thought, reason: message });
+				if (recordRefusal(step, llm, { tool, args, thought, reason: message })) break;
 				continue;
 			}
 
 			const call = await session.call(tool, args);
+			refusalStreak = 0;
 			totals.toolMs += call.ms;
 			if (tool === CONSOLE_TOOL && currentUrl !== null) consoleChecked.add(currentUrl);
 			evidence.push(call.text);
 
-			// Any tool result that carries refs is a usable view of the page. When it
-			// does not - Playwright sometimes returns a snapshot as a file link rather
-			// than inline - the previous refs are stale, so clear them rather than
-			// keeping them. A stale ref is worse than no ref: the model will click the
-			// wrong element with full confidence. The cost is one explicit snapshot.
-			actions = extractActions(call.text);
+			// Refs stay valid until the browser moves somewhere else. The old rule was to
+			// clear them whenever a result carried no refs, which is too eager: `browser_type`
+			// returns only the call it made and no page at all, so typing a username and then
+			// a password would have wiped the shortlist between the two keystrokes and the
+			// second one would have been refused as a ref nobody had offered. Playwright's
+			// refs survive a fill; they do not survive navigation, and that is the line.
+			//
+			// A result that does carry refs replaces the set, which is the common case:
+			// Playwright returns a fresh snapshot after most actions.
+			const harvested = extractActions(call.text, MAX_HARVESTED_ACTIONS);
+			if (harvested.length > 0) {
+				allActions = harvested;
+				actions = harvested.slice(0, SHORTLIST_SIZE);
+			}
 
 			const info = parsePageInfo(call.text);
 			if (info.url && info.url !== currentUrl) {
-				// A different page: the same labels can belong to different elements there, so
-				// what has already been clicked does not carry over.
+				// A different page. Whatever the model was told it could act on described the
+				// last one, and the same labels can belong to different elements here - so the
+				// shortlist goes, and the only way to get a new one is to look at the page. The
+				// cost is one explicit snapshot, and it is the cost the model already pays
+				// after every navigation.
+				allActions = [];
+				actions = [];
 				clickedWithState.clear();
 				currentUrl = info.url;
 			}
@@ -617,6 +697,22 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 			// made, so a repeat can be recognised as a repeat.
 			if (tool === 'browser_click' && clickedRef !== undefined) {
 				clickedWithState.set(clickedRef.ref, picture);
+			}
+
+			// A run that is going nowhere should say so rather than spend its budget on
+			// it. The widening nudge cannot help when the page the model is stuck on is the
+			// start page, because that is where the nudge would send it - and a run that
+			// clicked the wrong element and then re-read the unchanged page six times is
+			// exactly that shape. So the same tool result arriving again and again is
+			// treated as the end of the run, with a stop reason that says which it was.
+			if (tool === 'browser_wait_for') {
+				// A deliberate wait is not a stall; the page is expected to be slow.
+				stalledSteps = 0;
+				lastResultText = '';
+			} else {
+				const result = `${currentUrl ?? ''}::${call.text}`;
+				stalledSteps = result === lastResultText ? stalledSteps + 1 : 0;
+				lastResultText = result;
 			}
 
 			// A tool call that failed is a mistake in the instruction, or the machine,
@@ -809,6 +905,14 @@ export async function explore(config: Config, startedAt: string): Promise<Explor
 			// Newest last, so reversed here: the checks that matter most - leaving the
 			// application, a claim nothing supports - stay at the top where they were.
 			correction = notes.length > 0 ? [...notes].reverse().join('\n\n') : null;
+
+			if (stalledSteps >= STALL_LIMIT) {
+				stopReason = 'stalled';
+				log.dim(
+					`the same result came back ${stalledSteps + 1} times in a row - stopping rather than spending the rest of the budget on it`,
+				);
+				break;
+			}
 		}
 
 		const written = writeArtefacts();

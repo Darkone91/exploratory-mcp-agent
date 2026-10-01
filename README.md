@@ -173,12 +173,51 @@ prompt presents a menu. Finding the thing stops being a reasoning problem and
 becomes a lookup. Because Playwright returns a fresh snapshot after most actions,
 the menu refreshes itself without an extra step.
 
+**A ref the page never offered is refused.** The menu above is a courtesy; this is
+the rule. `browser_click`, `browser_type`, `browser_select_option` and
+`browser_generate_locator` all name an element, and all four are checked against
+what the page actually offers before they run. A container, a heading, a paragraph -
+anything with a ref in the page listing that no user could act on - is refused with
+the list of refs that would work.
+
+The failure behind it is the sharpest one in this file. A run typed a username and a
+password and then clicked `e14`, the empty `generic` div holding the error message,
+while the login button was `e15`. Playwright resolved the stale ref anyway, the click
+landed on a div, nothing changed, and the last six of fourteen steps went on
+re-reading an unchanged page with no finding at the end of it. One refused action
+would have turned that run into a logged-in session.
+
+The guard is deliberately more generous than the menu. It checks against every
+actionable element the page offered, while the prompt shows the first twelve, so the
+thirteenth link on a long page is allowed - refusing a link that is really there
+would be a false accusation, which is worse than a miss. What is refused is the
+element the page never offered at all.
+
+Refs survive a keystroke and die at a navigation. `browser_type` returns only the
+call it made, with no page in it, so an eager version of this guard wiped the refs
+between the username and the password and refused the second keystroke - found by
+running it, not by reading it. Playwright's refs outlive a fill; they do not outlive
+the browser moving on, and that is where the line is now.
+
 **Stall detection.** The model will happily take seven identical snapshots of the
 same page and call it progress. The loop compares snapshot text: if two
 consecutive reads of an unchanged page happen, the observation is replaced with
 an instruction to act. Detecting it from the evidence rather than the tool name
 matters, because re-snapshotting after a real page change is correct behaviour and
 would be caught by a naive "no repeats" rule.
+
+That correction is a paragraph of prompt like every other one, and one run ignored
+it for six consecutive steps - the same page, the same three refs, the same nothing.
+So five identical steps in a row now end the run, with `stalled` written into
+`summary.json` as the reason. Four consecutive refused steps do the same, because a
+refusal is also a step that produced nothing and a model that is not reading the
+corrections will not start reading them on the fifth.
+
+Stopping early is a judgement, and it is the opposite of what the widening nudge
+does. The nudge keeps a bad run going in the hope of making it good; this ends a run
+that is not going anywhere and says so, which costs fewer GPU-minutes and produces a
+report that is honest about how little it covers. A deliberate `browser_wait_for` is
+not a stall and is not counted.
 
 **It is told where it is.** The model cannot see the address bar, so it guesses -
 and guesses are relative paths like `/login`, which fail and burn a step. The
@@ -414,6 +453,7 @@ tools/
   check-notes.ts           note trimming, against real sentences from a run
   check-evidence.ts        claim checking, quoted names and bare control words
   check-prompt.ts          the data wrapper around everything the page returns
+  check-shortlist.ts       the ref guard, against the login page it was written for
   check-artifacts.ts       coverage in every report, and transcripts that explain themselves
 examples/
   the-internet/            one complete run, kept so the output can be read
@@ -439,6 +479,7 @@ model download to mean something.
 | `check:notes` | note trimming, against nine real sentences from the committed run |
 | `check:evidence` | claim checking, including the unquoted invention that got through |
 | `check:prompt` | the wrapper around page data, against a page that tries to close it |
+| `check:shortlist` | which elements a user can act on, and the ref guard that refuses the rest |
 | `check:artifacts` | coverage in every report, and a transcript that explains its own notes |
 
 The de-duplication threshold is the clearest example of why these exist. Reworded
@@ -461,14 +502,6 @@ change by accident.
   will get through. `npm run check:notes` holds nine real sentences from the
   committed run - including three that straddle the line between an observation and
   a plan - and is where a new phrasing will first show up as a failure.
-- **The model invents element refs when the shortlist is empty.** After a navigation,
-  Playwright sometimes returns the snapshot as a file link rather than inline, so
-  there are no refs to hand over and the model fills the gap. The committed example
-  does it twice - it asks to click `e2` and `e12`, both of which fail - and loses two
-  of its fourteen steps to it. The prompt says not to invent a ref; that sentence
-  should by now be read as a description of a bug rather than a rule. The fix is the
-  same shape as the others: reject a click or a type whose target is not in the
-  current shortlist, and ask for a snapshot first.
 - **A full verification pass.** The control check described above catches a control
   that was invented outright, quoted or not. It does not catch a claim that is
   subtly wrong: a count that is off, a flow described backwards, behaviour that does

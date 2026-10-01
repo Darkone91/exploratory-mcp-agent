@@ -83,6 +83,48 @@ export function isSelectBox(action: SnapshotAction | undefined): boolean {
 	return action !== undefined && SELECT_ROLES.has(actionRole(action));
 }
 
+/**
+ * Why this target cannot be acted on right now, or null when it can.
+ *
+ * The shortlist is the set of things on the page a user could do something with, read
+ * off the accessibility tree. Anything else - a container, a heading, a ref from a
+ * page the browser has since left - is not a target, and the model reaching for one is
+ * not a small mistake: a click on the wrong element does nothing, the page does not
+ * change, and a run can spend its whole remaining budget re-reading it.
+ *
+ * That is not hypothetical. A run typed a username and a password and then clicked
+ * `e14`, which was a `generic` container holding the empty error message; the login
+ * button was `e15`. The shortlist was empty at that moment for a reason worth
+ * understanding: `browser_type` returns only the Playwright call it ran, with no
+ * snapshot body, so there were no refs to offer and the model filled the gap from
+ * memory of an older page. Playwright resolved the stale ref anyway, the click
+ * landed on a div, and the last six steps of the run were spent confirming that
+ * nothing had happened.
+ *
+ * So an empty shortlist is a refusal rather than a licence to guess, and the message
+ * says what to do about it.
+ */
+export function unknownTarget(target: string, actions: SnapshotAction[]): string | null {
+	if (actions.length === 0) {
+		return [
+			`There is nothing you can act on right now, so "${target}" cannot be it.`,
+			'Some tools - browser_type among them - return only the action they performed, with no snapshot of the page, so no refs are available at this point in the run.',
+			'Take a snapshot, then act on a ref from it.',
+		].join(' ');
+	}
+	if (actions.some((action) => action.ref === target)) return null;
+
+	const menu = actions
+		.slice(0, 10)
+		.map((action) => `${action.ref} (${action.label})`)
+		.join(', ');
+	return [
+		`"${target}" is not one of the elements you can act on.`,
+		`The refs on this page are: ${menu}${actions.length > 10 ? `, and ${actions.length - 10} more` : ''}.`,
+		'A container, a heading or a paragraph carries a ref in the page listing but is not something you can act on, and a ref from an earlier page does not survive the browser moving on. Use one of the refs above, or take a fresh snapshot.',
+	].join(' ');
+}
+
 /** Strip list markers and collapse whitespace so labels read cleanly in a prompt. */
 function cleanLabel(text: string): string {
 	return text.replace(/^[\s\-*]+/, '').replace(/\s+/g, ' ').trim();
