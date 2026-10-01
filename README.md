@@ -495,6 +495,17 @@ change by accident.
 
 ## What is not built yet
 
+- **It does not probe edges, and the prompt asks it to.** "Probe edges on purpose:
+  empty input, very long input, wrong format, going back mid-flow, double-submitting,
+  reloading at a half-finished step" has been in the system prompt since the first
+  version, and across eight runs at a fourteen-step budget not one did any of it. They
+  log in with the correct credentials and open the happy path, every time. The runs
+  that reached a shopping app never tried the wrong password, never submitted the form
+  empty, and never opened the cart. That is the largest gap between what this tool
+  claims to do and what it does: an exploratory tester who only walks the intended path
+  finds only the mistakes that path happens to expose. Enforcing it the way the other
+  rules were enforced - a step budget that must include a deliberate failure, say, or a
+  correction that names the untried edge - is where the next real gain is.
 - **The console counter is a finding generator.** The snapshot header prints
   `Console: 5 errors` for free, and `examples/saucedemo` reports both of its findings
   from that line without ever calling `browser_console_messages` - so neither finding

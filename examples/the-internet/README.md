@@ -3,9 +3,10 @@
 The real, unedited output of one exploration, committed so you can read what the
 agent produces without installing Ollama, Playwright and a 9 GB model first.
 
-This is the older of the two runs under `examples/`. `examples/saucedemo` is newer,
-and was produced by the code as it stands; this one was not, and the last section
-below is the list of changes that postdate it.
+This is the oldest of the three runs under `examples/`, and the only one that no
+current version of the code could produce. `examples/saucedemo` and
+`examples/saucedemo-after` came after it, the second one after the guards existed, and
+the last section below lists the changes that postdate this run.
 
 | | |
 |---|---|
@@ -66,14 +67,13 @@ page at all, so an eager version of this guard wiped the refs between the userna
 the password and refused the second keystroke. Refs now survive a fill and die at a
 navigation.
 
-Seven of the thirteen steps went into one page, and it reached 2 pages of a
-twelve-page application. That is poor coverage, and the report says so rather than
-implying otherwise.
-
-Both are next on the list. The second is why the loop counts distinct pages reached
-and pushes the model to widen when that count stays low - and that push, being a
-paragraph of prompt, was ignored by six runs in a row, so three steps of silence now
-means the loop goes back to the start page itself.
+Coverage is the one that is still open. Seven of the thirteen steps went into one
+page, and the run reached 2 pages of a twelve-page application. The report says so
+rather than implying otherwise, and the loop now counts distinct pages reached and
+pushes the model to widen when that count stays low - which, being a paragraph of
+prompt, was then ignored by six runs in a row. Three steps of silence is now the
+limit before the loop goes back to the start page itself. That is a better answer
+than it had, and it is still not an answer: the widening happens, the depth does not.
 
 ## One thing that postdates this run
 

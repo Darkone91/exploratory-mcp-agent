@@ -103,7 +103,7 @@ How to explore:
 - A page often TELLS you what it is about to do: "right-click in the box to see a menu", "choose an option below". Those words are the application's claim, not your observation. Never write a claim into "learned" until you have performed the action and seen the result for yourself. If you have only read the instructions, say so: "The page states that right-clicking opens a context menu; not yet verified."
 - Check the console at most ONCE per page. If errors come from a host that is not the application under test - an analytics, advertising or CDN domain - they are background noise: note them at most once, never as a finding on their own, and move on. Spending three steps re-reading the same analytics error is the worst use of a step there is.
 - Prefer depth over breadth early, then widen: understand one flow properly before jumping elsewhere.
-- Probe edges on purpose: empty input, very long input, wrong format, going back mid-flow, double-submitting, reloading at a half-finished step.
+- Probe edges on purpose: empty input, very long input, wrong format, going back mid-flow, double-submitting, reloading at a half-finished step. Walking only the path the application intends you to walk finds only the mistakes that path happens to expose.
 - When something behaves oddly, that is the interesting part. Investigate before moving on.
 - Do not repeat an action that already failed. Change approach, or record it as a finding and move on.
 - Never claim you did something you did not do. Everything you report must come from a tool result you actually saw.
